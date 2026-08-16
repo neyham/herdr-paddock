@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go mod tidy -diff
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./... -count=1 -race
+      # The plugin manifest's build step must keep working
+      - run: go build -o paddock ./cmd/paddock
+      # The demo mock must stay valid JSON (it doubles as the try-it path)
+      - run: ./demo/mock-herdr api snapshot | python3 -m json.tool > /dev/null

@@ -1,0 +1,143 @@
+#!/bin/sh
+# A fake herdr CLI that feeds paddock a small demo flock.
+# Try paddock without a running herdr:
+#
+#   HERDR_BIN_PATH="$PWD/demo/mock-herdr" paddock
+#
+# It answers the two calls paddock makes — `api snapshot` and
+# `agent read <pane> …` — with static demo data. Replies are accepted
+# and dropped.
+
+case "$1 $2" in
+"api snapshot")
+	cat <<'JSON'
+{"id":"demo","result":{"type":"snapshot","snapshot":{
+"workspaces":[
+ {"workspace_id":"w1","label":"shop"},
+ {"workspace_id":"w2","label":"blog"},
+ {"workspace_id":"w3","label":"infra"},
+ {"workspace_id":"w4","label":"docs"}
+],
+"tabs":[
+ {"tab_id":"t1","workspace_id":"w1","label":"checkout","focused":false,"agent_status":"blocked"},
+ {"tab_id":"t2","workspace_id":"w1","label":"webhooks","focused":false,"agent_status":"working"},
+ {"tab_id":"t3","workspace_id":"w2","label":"migrate","focused":false,"agent_status":"working"},
+ {"tab_id":"t4","workspace_id":"w3","label":"deploy","focused":false,"agent_status":"blocked"},
+ {"tab_id":"t5","workspace_id":"w2","label":"rss","focused":false,"agent_status":"done"},
+ {"tab_id":"t6","workspace_id":"w4","label":"api-docs","focused":false,"agent_status":"done"},
+ {"tab_id":"t7","workspace_id":"w3","label":"backups","focused":false,"agent_status":"idle"},
+ {"tab_id":"t8","workspace_id":"w4","label":"scratch","focused":false,"agent_status":"idle"}
+],
+"agents":[
+ {"tab_id":"t1","agent":"claude","agent_status":"blocked","cwd":"/home/dev/shop","pane_id":"p1","terminal_title_stripped":"2026-08-16｜Checkout flow｜Pick a payment provider","revision":41,"state_change_seq":7},
+ {"tab_id":"t2","agent":"codex","agent_status":"working","cwd":"/home/dev/shop","pane_id":"p2","terminal_title_stripped":"2026-08-16｜Checkout flow｜Wire Stripe webhooks","revision":88,"state_change_seq":12},
+ {"tab_id":"t3","agent":"pi","agent_status":"working","cwd":"/home/dev/blog","pane_id":"p3","terminal_title_stripped":"2026-08-16｜Blog engine｜Migrate posts to markdown","revision":63,"state_change_seq":9},
+ {"tab_id":"t4","agent":"cursor","agent_status":"blocked","cwd":"/home/dev/infra","pane_id":"p4","terminal_title_stripped":"2026-08-16｜Deploy｜Approve prod migration","revision":29,"state_change_seq":5},
+ {"tab_id":"t5","agent":"grok","agent_status":"done","cwd":"/home/dev/blog","pane_id":"p5","terminal_title_stripped":"2026-08-16｜Blog engine｜Fix RSS pubDate","revision":17,"state_change_seq":4},
+ {"tab_id":"t6","agent":"claude","agent_status":"done","cwd":"/home/dev/docs","pane_id":"p6","terminal_title_stripped":"2026-08-16｜Docs｜Regenerate API reference","revision":52,"state_change_seq":6},
+ {"tab_id":"t7","agent":"codex","agent_status":"idle","cwd":"/home/dev/infra","pane_id":"p7","terminal_title_stripped":"2026-08-16｜Infra｜Nightly backup review","revision":8,"state_change_seq":2},
+ {"tab_id":"t8","agent":"pi","agent_status":"idle","cwd":"/home/dev/docs","pane_id":"p8","terminal_title_stripped":"","revision":3,"state_change_seq":1}
+]}}}
+JSON
+	exit 0
+	;;
+"agent read"|"pane read")
+	case "$3" in
+	p1)
+		cat <<'TXT'
+I compared the three options against your requirements:
+
+  Stripe    best docs, 2.9% + 30c, Radar included
+  Adyen     lower fees at volume, heavier integration
+  Paddle    merchant of record, handles EU VAT for you
+
+Since you sell to the EU but have no legal entity there,
+Paddle removes the VAT problem entirely. Stripe is the
+better developer experience if you'd rather own tax.
+
+Which way do you want to go — Paddle (they handle VAT)
+or Stripe (we file VAT ourselves)?
+TXT
+		;;
+	p2)
+		cat <<'TXT'
+Wired the endpoint and verified signatures:
+
+  ✓ POST /webhooks/stripe route added
+  ✓ signature check with STRIPE_WEBHOOK_SECRET
+  ✓ idempotency table keyed by event id
+
+Now replaying the fixture events against the handler —
+payment_intent.succeeded and charge.refunded both pass,
+checking invoice.payment_failed next.
+TXT
+		;;
+	p3)
+		cat <<'TXT'
+Converted 142 of 210 posts so far. The importer handles
+front-matter, code fences, and footnotes cleanly.
+
+Two posts use a custom [gallery] shortcode that has no
+markdown equivalent — converting those to plain image
+grids with a caption line, flagging them in the report
+for you to eyeball later.
+TXT
+		;;
+	p4)
+		cat <<'TXT'
+The migration adds a NOT NULL column to orders (12M rows).
+
+Plan: add column nullable → backfill in 10k batches
+→ set NOT NULL. Estimated 25 min, no table lock held
+longer than a batch.
+
+This touches production data — say "go" and I'll run it,
+or "tonight" and I'll schedule it for 03:00.
+TXT
+		;;
+	p5)
+		cat <<'TXT'
+Fixed. pubDate was rendering the post's *updated* time,
+so every edit bumped items to the top of readers' feeds.
+
+  - <pubDate>{{ .Lastmod }}</pubDate>
+  + <pubDate>{{ .PublishDate }}</pubDate>
+
+Validated against the W3C feed checker — clean. The fix
+is on branch fix/rss-pubdate, one commit, ready to merge.
+TXT
+		;;
+	p6)
+		cat <<'TXT'
+Regenerated the API reference from the OpenAPI spec:
+
+  38 endpoints documented, 4 new since last run
+  added examples for the pagination cursor params
+  fixed 2 broken anchors in the auth guide
+
+Preview is up at docs-preview/api. Diff is small and
+mechanical — safe to publish whenever.
+TXT
+		;;
+	p7)
+		cat <<'TXT'
+Last night's backup completed: 4.2 GB, verified restore
+on the staging replica in 6m 40s. Retention pruned two
+snapshots older than 30 days. Nothing needs attention.
+TXT
+		;;
+	*)
+		echo "waiting for instructions."
+		;;
+	esac
+	exit 0
+	;;
+"agent prompt"|"tab focus"|"workspace focus"|"agent focus")
+	echo '{"id":"demo","result":{"type":"ok"}}'
+	exit 0
+	;;
+*)
+	echo "mock-herdr: unhandled: $*" >&2
+	exit 1
+	;;
+esac

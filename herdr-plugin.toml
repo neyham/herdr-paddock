@@ -1,0 +1,26 @@
+id = "neyham.paddock"
+name = "Paddock"
+version = "0.6.2"
+min_herdr_version = "0.7.4"
+description = "A card-wall feed for your herd: glance over every agent, zoom in, reply — over plain SSH or right inside herdr."
+platforms = ["linux", "macos"]
+
+# Requires a Go toolchain (>= 1.24) on the machine at install time.
+[[build]]
+command = ["go", "build", "-o", "paddock", "./cmd/paddock"]
+
+[[panes]]
+id = "wall"
+title = "Paddock"
+placement = "popup"
+width = "92%"
+height = "92%"
+command = ["./paddock"]
+
+# Entry point: shows up in herdr's plugin action menu, and users can bind a
+# key to "neyham.paddock.open" in their config.toml (see README).
+[[actions]]
+id = "open"
+title = "Open the paddock"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "neyham.paddock", "--entrypoint", "wall"]

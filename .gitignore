@@ -1,0 +1,5 @@
+/paddock
+/bin/
+*.exe
+.DS_Store
+assets/paddock-phone-throwaway.gif
