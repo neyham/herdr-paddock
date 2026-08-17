@@ -642,3 +642,58 @@ func TestParseCardTitle(t *testing.T) {
 		}
 	}
 }
+
+// Windows terminals report generic shell titles ("Windows PowerShell",
+// "pwsh in C:\Users\..."), which say nothing about the agent. cardTitleFor
+// must skip them and walk the fallback chain down to the agent name, while
+// unix skill-convention titles keep working unchanged. (PR #1)
+func TestCardTitleForWindowsShells(t *testing.T) {
+	cases := []struct {
+		row  model.TabRow
+		want string
+	}{
+		{model.TabRow{Title: "Windows PowerShell", Agent: "codex"}, "codex"},
+		{model.TabRow{Title: `pwsh in C:\Users\moon`, Agent: "pi"}, "pi"},
+		{model.TabRow{Title: "cmd", TabLabel: "billing", Agent: "grok"}, "billing"},
+		{model.TabRow{Title: "Windows PowerShell", WSLabel: "infra"}, "infra"},
+		{model.TabRow{Title: "Windows PowerShell"}, "agent"},
+		// unix titles with the ｜ skill convention are untouched
+		{model.TabRow{Title: "π - 2026-08-12｜Launchd Setup｜Fix Tab - sam", Agent: "pi"}, "Fix Tab"},
+		// titles that merely start with a shell name are not generic
+		{model.TabRow{Title: "bash script refactor", Agent: "pi"}, "bash script refactor"},
+	}
+	for _, c := range cases {
+		if got := cardTitleFor(c.row); got != c.want {
+			t.Fatalf("cardTitleFor(%q) = %q, want %q", c.row.Title, got, c.want)
+		}
+	}
+}
+
+// piwi-tui pet widget rows are chrome only when they look like the actual
+// widget (gauges, ASCII faces, status line) — agent prose using the same
+// vocabulary must stay on the card. (PR #1 follow-up)
+func TestPetWidgetChromeGated(t *testing.T) {
+	chrome := []string{
+		"Fullness ███░░ 62%  Joy ████░ 80%  Energy ██░░░ 41%",
+		"fullness 62 · joy 80 · energy 41",
+		"✦ 1204 Sparks · Nook: cozy corner",
+		`/\___/\  (o.o)`,
+		`/\_/\  (^.^)  / > <\`,
+		`/\___/\  piwi · Lv 3 · napping · wearing a scarf`,
+	}
+	for _, ln := range chrome {
+		if !looksLikeChrome(ln) {
+			t.Fatalf("pet widget row should be chrome: %q", ln)
+		}
+	}
+	prose := []string{
+		"the joy of cooking: fullness and energy in every meal",
+		"sparks fly in the reading nook",
+		"joy, energy and fullness are what this refactor needs",
+	}
+	for _, ln := range prose {
+		if looksLikeChrome(ln) {
+			t.Fatalf("agent prose must not be treated as chrome: %q", ln)
+		}
+	}
+}

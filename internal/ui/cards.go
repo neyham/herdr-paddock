@@ -115,12 +115,17 @@ func looksLikeChrome(ln string) bool {
 		len(ln) <= 24 && (strings.HasSuffix(ln, "…") || strings.HasSuffix(ln, "...")) {
 		return true
 	}
-	// piwi-tui pet widget footer (pi plugin) - stable patterns from faceFor()
-	if strings.Contains(low, "fullness") && strings.Contains(low, "joy") && strings.Contains(low, "energy") {
-		return true
-	}
-	if strings.Contains(low, "sparks") && strings.Contains(low, "nook") {
-		return true
+	// piwi-tui pet widget footer (pi plugin) - stable patterns from faceFor().
+	// Stat rows always carry numeric gauges or bar glyphs, so require one
+	// before the keywords count as chrome; prose that merely mentions these
+	// words stays visible on the card.
+	if strings.ContainsAny(ln, "0123456789█▓▒░▁▂▃▄▅▆▇") {
+		if strings.Contains(low, "fullness") && strings.Contains(low, "joy") && strings.Contains(low, "energy") {
+			return true
+		}
+		if strings.Contains(low, "sparks") && strings.Contains(low, "nook") {
+			return true
+		}
 	}
 	// pet ASCII art: faceFor() generates these across all moods/stages/accessories
 	if strings.Contains(ln, "/\\___/\\") || strings.Contains(ln, "/\\_/\\") || strings.Contains(ln, "\\*___*/") || strings.Contains(ln, "/\\_+_/\\") || strings.Contains(ln, "~\\___/~") || strings.Contains(ln, "/\\_^_/\\") || strings.Contains(ln, "~\\_/\\") {
