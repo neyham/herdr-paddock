@@ -54,7 +54,7 @@ go install github.com/neyham/herdr-paddock/cmd/paddock@latest
 paddock
 ```
 
-Or as a herdr plugin (opens as a popup over your herdr session):
+Or as a herdr plugin (opens as a popup over your herdr session). Also listed on the [community marketplace](https://herdr.dev/plugins/):
 
 ```sh
 herdr plugin install neyham/herdr-paddock
