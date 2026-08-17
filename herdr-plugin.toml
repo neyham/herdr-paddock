@@ -1,6 +1,6 @@
 id = "neyham.paddock"
 name = "Paddock"
-version = "0.6.2"
+version = "0.6.3"
 min_herdr_version = "0.7.4"
 description = "A card-wall feed for your herd: glance over every agent, zoom in, reply — over plain SSH or right inside herdr."
 platforms = ["linux", "macos", "windows"]
