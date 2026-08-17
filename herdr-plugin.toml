@@ -3,24 +3,49 @@ name = "Paddock"
 version = "0.6.2"
 min_herdr_version = "0.7.4"
 description = "A card-wall feed for your herd: glance over every agent, zoom in, reply — over plain SSH or right inside herdr."
-platforms = ["linux", "macos"]
+platforms = ["linux", "macos", "windows"]
 
 # Requires a Go toolchain (>= 1.24) on the machine at install time.
 [[build]]
+platforms = ["linux", "macos"]
 command = ["go", "build", "-o", "paddock", "./cmd/paddock"]
+
+[[build]]
+platforms = ["windows"]
+command = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "go build -o paddock.exe ./cmd/paddock"]
+
 
 [[panes]]
 id = "wall"
+platforms = ["linux", "macos"]
 title = "Paddock"
 placement = "popup"
 width = "92%"
 height = "92%"
 command = ["./paddock"]
 
+[[panes]]
+id = "wall-windows"
+platforms = ["windows"]
+title = "Paddock"
+placement = "popup"
+width = "92%"
+height = "92%"
+command = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& { $root = $env:HERDR_PLUGIN_ROOT -replace '\\\\\\\\\\\\\\\\?\\\\\\\\', ''; & \"$root\\paddock.exe\" }"]
+
+
 # Entry point: shows up in herdr's plugin action menu, and users can bind a
 # key to "neyham.paddock.open" in their config.toml (see README).
 [[actions]]
 id = "open"
+platforms = ["linux", "macos"]
 title = "Open the paddock"
 contexts = ["workspace"]
 command = ["herdr", "plugin", "pane", "open", "--plugin", "neyham.paddock", "--entrypoint", "wall"]
+
+[[actions]]
+id = "open-windows"
+platforms = ["windows"]
+title = "Open the paddock"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "neyham.paddock", "--entrypoint", "wall-windows"]

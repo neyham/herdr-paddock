@@ -432,6 +432,10 @@ func plainStatusWord(status string) string {
 
 func cardTitleFor(t model.TabRow) string {
 	title := parseCardTitle(t.Title)
+	// Skip generic shell titles (Windows PowerShell, pwsh in ..., bash, zsh, etc.)
+	if isGenericShellTitle(title) {
+		title = ""
+	}
 	if layout.Width(title) < 4 {
 		title = t.TabLabel
 	}
@@ -439,9 +443,38 @@ func cardTitleFor(t model.TabRow) string {
 		title = t.WSLabel
 	}
 	if title == "" {
+		title = t.Agent
+	}
+	if title == "" {
 		title = "agent"
 	}
 	return title
+}
+
+func isGenericShellTitle(title string) bool {
+	title = strings.ToLower(strings.TrimSpace(title))
+	if title == "" {
+		return true
+	}
+	// Common shell/terminal titles that don't identify the agent
+	generic := []string{
+		"windows powershell",
+		"powershell",
+		"pwsh",
+		"cmd",
+		"bash",
+		"zsh",
+		"fish",
+		"shell",
+		"terminal",
+		"console",
+	}
+	for _, g := range generic {
+		if title == g || strings.HasPrefix(title, g+" in ") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) ageOf(tabID string) string {

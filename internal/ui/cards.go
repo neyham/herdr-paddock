@@ -115,6 +115,26 @@ func looksLikeChrome(ln string) bool {
 		len(ln) <= 24 && (strings.HasSuffix(ln, "…") || strings.HasSuffix(ln, "...")) {
 		return true
 	}
+	// piwi-tui pet widget footer (pi plugin) - stable patterns from faceFor()
+	if strings.Contains(low, "fullness") && strings.Contains(low, "joy") && strings.Contains(low, "energy") {
+		return true
+	}
+	if strings.Contains(low, "sparks") && strings.Contains(low, "nook") {
+		return true
+	}
+	// pet ASCII art: faceFor() generates these across all moods/stages/accessories
+	if strings.Contains(ln, "/\\___/\\") || strings.Contains(ln, "/\\_/\\") || strings.Contains(ln, "\\*___*/") || strings.Contains(ln, "/\\_+_/\\") || strings.Contains(ln, "~\\___/~") || strings.Contains(ln, "/\\_^_/\\") || strings.Contains(ln, "~\\_/\\") {
+		if strings.Contains(ln, "(o.o)") || strings.Contains(ln, "(-.-)") || strings.Contains(ln, "(o.-)") || strings.Contains(ln, "(O.o)") || strings.Contains(ln, "(o.O)") || strings.Contains(ln, "(^.^)") || strings.Contains(ln, "(._.)") || strings.Contains(ln, "(u.u)") {
+			return true
+		}
+		if strings.Contains(ln, "/ > <\\") || strings.Contains(ln, "< ^ >") || strings.Contains(ln, "/| |\\") {
+			return true
+		}
+		// head-only line with status: /\___/\  name · Lv N · activity · wearing X
+		if strings.Contains(ln, " · Lv ") && strings.Contains(ln, "wearing") {
+			return true
+		}
+	}
 	trimmed := strings.TrimSpace(ln)
 	switch trimmed {
 	case "❯", ">", "›", "$", "~", "▼", "▲", "»", "→":
