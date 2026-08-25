@@ -12,7 +12,7 @@ import (
 	"github.com/neyham/herdr-paddock/internal/model"
 )
 
-const version = "0.6.3"
+const version = "0.6.4"
 
 type ageMark struct {
 	seq int
