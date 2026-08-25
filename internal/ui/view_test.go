@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -25,6 +26,14 @@ func sampleModel(w, h int) Model {
 	}
 	m.snap.Workspaces = 9
 	return m
+}
+
+func numberedTranscript(last, first int) string {
+	lines := make([]string, 0, last-first+1)
+	for i := first; i <= last; i++ {
+		lines = append(lines, fmt.Sprintf("line-%02d", i))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func keyMsg(s string) tea.KeyMsg {
@@ -348,8 +357,11 @@ func TestDetailFlipsBetweenPosts(t *testing.T) {
 	if m.detailTab != "w2:t3" {
 		t.Fatalf("expected the blocked card first, got %s", m.detailTab)
 	}
-	next, _ = m.handleKey(keyMsg("j"))
+	next, cmd := m.handleKey(keyMsg("j"))
 	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("flip should wait for the opening detail read instead of overlapping it")
+	}
 	if m.detailTab != "w5:t6" {
 		t.Fatalf("j should flip to the next post, got %s", m.detailTab)
 	}
@@ -435,6 +447,148 @@ func TestDetailShowsTranscriptAndEcho(t *testing.T) {
 		if !strings.Contains(plain, need) {
 			t.Fatalf("missing %q:\n%s", need, plain)
 		}
+	}
+}
+
+func TestDetailScrollStaysAnchoredWhenOutputAppends(t *testing.T) {
+	old := numberedTranscript(40, 1)
+	newText := numberedTranscript(41, 1)
+	m := sampleModel(80, 24)
+	m.detailOpen = true
+	m.detailTab = "w2:t3"
+	m.transcriptOf = "p2"
+	m.transcript = old
+	m.detailSeq = 7
+	m.detailScroll = 4
+
+	next, _ := m.Update(readMsg{pane: "p2", text: newText, seq: 7})
+	m = next.(Model)
+	if m.detailScroll != 5 {
+		t.Fatalf("scroll should follow one appended line, got %d", m.detailScroll)
+	}
+
+	// At the live tail the reader should continue following new output rather
+	// than accumulating an invisible offset.
+	m.detailScroll = 0
+	next, _ = m.Update(readMsg{pane: "p2", text: numberedTranscript(42, 1), seq: 7})
+	m = next.(Model)
+	if m.detailScroll != 0 {
+		t.Fatalf("bottom-pinned detail should stay at zero, got %d", m.detailScroll)
+	}
+}
+
+func TestDetailScrollStaysAnchoredAcrossRollingReadWindow(t *testing.T) {
+	m := sampleModel(80, 24)
+	m.detailOpen = true
+	m.detailTab = "w2:t3"
+	m.transcriptOf = "p2"
+	m.transcript = numberedTranscript(40, 1)
+	m.detailSeq = 8
+	m.detailScroll = 4
+
+	next, _ := m.Update(readMsg{
+		pane: "p2",
+		text: numberedTranscript(41, 2),
+		seq:  8,
+	})
+	m = next.(Model)
+	if m.detailScroll != 5 {
+		t.Fatalf("scroll should follow a one-line rolling window, got %d", m.detailScroll)
+	}
+}
+
+func TestTranscriptShiftRejectsTwoLineCoincidence(t *testing.T) {
+	oldLines := []string{"old", "repeat-a", "repeat-b"}
+	newLines := []string{"repeat-a", "repeat-b", "new"}
+	if shift, ok := transcriptShift(oldLines, newLines); ok || shift != 0 {
+		t.Fatalf("short coincidence should not move scroll, got shift=%d ok=%v", shift, ok)
+	}
+}
+
+func TestDetailBudgetMatchesMinimumRenderWidth(t *testing.T) {
+	if got, want := detailBudget(10), detailBudget(20); got != want {
+		t.Fatalf("narrow detail budget should use the render minimum, got %d want %d", got, want)
+	}
+}
+
+func TestDetailReadDoesNotOverlap(t *testing.T) {
+	m := sampleModel(80, 24)
+	m.detailOpen = true
+	m.detailTab = "w2:t3"
+	m.transcriptOf = "p2"
+	m.detailSeq = 3
+	m.detailReading = true
+
+	next, cmd := m.Update(tickDetail(time.Now()))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("in-flight detail read should keep the refresh timer alive")
+	}
+	if m.detailSeq != 3 {
+		t.Fatalf("in-flight detail read should not dispatch another read, seq=%d", m.detailSeq)
+	}
+}
+
+func TestManualDetailReadWaitsForInFlightRead(t *testing.T) {
+	m := sampleModel(80, 24)
+	m.detailOpen = true
+	m.detailTab = "w2:t3"
+	m.transcriptOf = "p2"
+	m.detailSeq = 3
+	m.detailReadSeq = 3
+	m.detailReading = true
+
+	next, cmd := m.handleKey(keyMsg("r"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("manual refresh should wait for the in-flight read")
+	}
+	if !m.detailReading || m.detailSeq != 4 {
+		t.Fatalf("manual refresh should invalidate but preserve the active read, reading=%v seq=%d", m.detailReading, m.detailSeq)
+	}
+
+	next, _ = m.Update(readMsg{pane: "p2", text: "stale result", seq: 3})
+	m = next.(Model)
+	if m.detailReading {
+		t.Fatal("completed invalidated read should release the read slot")
+	}
+	if m.transcript == "stale result" {
+		t.Fatal("invalidated read should not replace the current transcript")
+	}
+}
+
+func TestLateDetailReadAfterCloseIsIgnored(t *testing.T) {
+	m := sampleModel(80, 24)
+	m.detailOpen = true
+	m.detailTab = "w2:t3"
+	m.transcriptOf = "p2"
+	m.detailSeq = 4
+	m.transcript = "old transcript"
+	m.closeDetail()
+
+	next, _ := m.Update(readMsg{pane: "p2", text: "late transcript", seq: 4})
+	m = next.(Model)
+	if m.transcript != "old transcript" {
+		t.Fatalf("closed detail accepted a late read: %q", m.transcript)
+	}
+}
+
+func TestFlipWithoutPaneDoesNotStickDetailRead(t *testing.T) {
+	m := sampleModel(80, 24)
+	m.snap.Tabs = append(m.snap.Tabs,
+		model.TabRow{TabID: "w3:t1", WSLabel: "shop", TabLabel: "missing", Agent: "pi", Status: "idle"},
+	)
+	m.detailOpen = true
+	m.detailTab = "w5:t6"
+	m.transcriptOf = "p1"
+
+	next, cmd := m.flipDetail(1)
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("a tab without a pane should not schedule a read")
+	}
+	if m.detailReading {
+		t.Fatal("nil detail read command must clear the in-flight state")
 	}
 }
 
@@ -572,6 +726,59 @@ func TestAgentInputBoxAndFooterDropped(t *testing.T) {
 				t.Fatalf("%s: chrome %q leaked: %#v", c.name, bad, lines)
 			}
 		}
+	}
+}
+
+func TestOutputFrameDoesNotDiscardFollowingAnswer(t *testing.T) {
+	raw := "the result panel is part of the answer.\n" +
+		"╭────────────────────────╮\n" +
+		"│ result: 42             │\n" +
+		"╰────────────────────────╯\n" +
+		"the final sentence after the panel is important.\n"
+	joined := strings.Join(clipTranscript(raw, 80, 20), " ")
+	for _, need := range []string{"result panel", "result: 42", "final sentence after"} {
+		if !strings.Contains(joined, need) {
+			t.Fatalf("real output %q was truncated: %q", need, joined)
+		}
+	}
+}
+
+func TestCursorTaskFooterIsDropped(t *testing.T) {
+	raw := "the agent finished the requested change.\n" +
+		"▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n" +
+		"  → Add a follow-up\n" +
+		"▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n" +
+		"  1 task\n" +
+		"  Fable 5 300K High · 8 files edited   Run Everything\n" +
+		"  ~/projects/demo · main\n"
+	joined := strings.Join(clipTranscript(raw, 80, 20), " ")
+	if !strings.Contains(joined, "finished the requested change") {
+		t.Fatalf("lost real output: %q", joined)
+	}
+	for _, bad := range []string{"Add a follow-up", "1 task", "Fable 5", "Run Everything", "· main"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("footer %q leaked: %q", bad, joined)
+		}
+	}
+}
+
+func TestCursorCwdBranchAnswerSurvivesFooterCut(t *testing.T) {
+	raw := "the answer explains the checkout change.\n" +
+		"clone it into ~/projects/answer · feature-x\n" +
+		"▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n" +
+		"  → Add a follow-up\n" +
+		"▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n" +
+		"  1 task\n" +
+		"  Fable 5 300K High · 8 files edited   Run Everything\n" +
+		"  ~/projects/demo · main\n"
+	joined := strings.Join(clipTranscript(raw, 80, 20), " ")
+	for _, need := range []string{"checkout change", "~/projects/answer", "feature-x"} {
+		if !strings.Contains(joined, need) {
+			t.Fatalf("answer line %q was truncated: %q", need, joined)
+		}
+	}
+	if strings.Contains(joined, "~/projects/demo") {
+		t.Fatalf("cursor footer leaked: %q", joined)
 	}
 }
 

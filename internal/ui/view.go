@@ -637,7 +637,10 @@ func renderDetail(m Model, w, h int) []string {
 			bits = append(bits, fmt.Sprintf("%d/%d", idx+1, len(feed)))
 		}
 		extra = stDim.Render(strings.Join(bits, " · "))
-		edge = statusEdge(status, true, m.pulse%2 == 0)
+		// The wall uses a breathing blocked border to attract attention. In
+		// the detail view that animation makes an otherwise stable transcript
+		// look like it is flickering, so keep the reading surface still.
+		edge = statusEdge(status, true, true)
 		head = chipFor(status)
 	}
 
@@ -646,12 +649,12 @@ func renderDetail(m Model, w, h int) []string {
 		areaH = 3
 	}
 
-	budget := innerW - 1
+	budget := detailBudget(w)
 	var lines []string
 	if row == nil {
 		lines = []string{stErr.Render(" this tab is gone · esc back")}
 	} else {
-		raw := clipTranscript(m.transcript, budget, 4000)
+		raw := clipTranscript(m.transcript, budget, detailMaxLines)
 		if len(raw) == 0 {
 			lines = []string{stDim.Render(" nothing here yet · give it a second")}
 		} else {
@@ -815,6 +818,68 @@ func clipTranscript(raw string, w, maxLines int) []string {
 		kept = append(block, kept...)
 	}
 	return kept
+}
+
+func detailBudget(w int) int {
+	if w < 20 {
+		w = 20
+	}
+	innerW := w - 2
+	if innerW < 10 {
+		innerW = 10
+	}
+	return innerW - 1
+}
+
+func transcriptLines(raw string, w int) []string {
+	return clipTranscript(raw, detailBudget(w), detailMaxLines)
+}
+
+func equalLines(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// transcriptShift finds how far a refreshed tail moved while preserving a
+// reader's place above the newest output. A pane read is a moving window: as
+// a new line arrives, the oldest line may disappear even when the line count
+// stays constant. Keeping only a numeric distance from the bottom makes the
+// detail view jump in that case.
+func transcriptShift(oldLines, newLines []string) (int, bool) {
+	if len(oldLines) == 0 || len(newLines) == 0 {
+		return 0, false
+	}
+	if len(newLines) >= len(oldLines) && equalLines(oldLines, newLines[:len(oldLines)]) {
+		return len(newLines) - len(oldLines), true // appended at the tail
+	}
+	if len(newLines) < len(oldLines) && equalLines(newLines, oldLines[:len(newLines)]) {
+		return len(newLines) - len(oldLines), true // tail was cleaned away
+	}
+	for overlap := min(len(oldLines), len(newLines)); overlap >= 3; overlap-- {
+		oldStart := len(oldLines) - overlap
+		if equalLines(oldLines[oldStart:], newLines[:overlap]) {
+			return len(newLines) - overlap, true // rolling tail window
+		}
+	}
+	return 0, false
+}
+
+func preserveDetailScroll(scroll int, oldRaw, newRaw string, w int) int {
+	if scroll <= 0 {
+		return 0
+	}
+	shift, ok := transcriptShift(transcriptLines(oldRaw, w), transcriptLines(newRaw, w))
+	if !ok {
+		return scroll
+	}
+	return max(0, scroll+shift)
 }
 
 func usefulLine(ln string) string {

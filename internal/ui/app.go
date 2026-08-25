@@ -12,7 +12,12 @@ import (
 	"github.com/neyham/herdr-paddock/internal/model"
 )
 
-const version = "0.6.4"
+const (
+	version             = "0.6.5"
+	detailReadLines     = 400
+	detailMaxLines      = 4000
+	detailRefreshPeriod = time.Second
+)
 
 type ageMark struct {
 	seq int
@@ -37,10 +42,12 @@ type Model struct {
 	inputOn       bool
 	detailOpen    bool
 	detailReply   bool // detail sub-mode: false = view/flip, true = typing
-	detailTicking bool // one 1s refresh chain at a time
+	detailTicking bool // one detail refresh chain at a time
+	detailReading bool // do not overlap slow pane reads
 	detailTab     string
 	detailScroll  int
 	detailSeq     int // per-fetch sequence; late/out-of-order reads are dropped
+	detailReadSeq int // sequence of the one command currently running
 	feedScroll    int // glance viewport, moves minimally to keep selection visible
 	pressX        int // pending mouse press; click fires on release at the same cell
 	pressY        int
@@ -190,16 +197,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, fetchHerdr(m.bin)
 	case readMsg:
-		// Reads overlap (1s tick, 3s timeout): only the latest dispatched
-		// fetch may land, or a slow old response would overwrite new state.
+		if msg.seq == m.detailReadSeq {
+			m.detailReading = false
+		}
 		if msg.pane != "" && msg.pane == m.transcriptOf && msg.seq == m.detailSeq {
+			if !m.detailOpen {
+				return m, nil
+			}
 			if msg.err != nil {
 				if m.transcript == "" {
 					m.actionNote = "read failed: " + msg.err.Error()
 				}
 			} else {
+				oldTranscript := m.transcript
 				m.transcript = msg.text
 				m.previews[msg.pane] = msg.text // the wall benefits from the long read too
+				if m.detailScroll > 0 {
+					m.detailScroll = preserveDetailScroll(m.detailScroll, oldTranscript, msg.text, m.width)
+				}
 				m.dropEchoedReplies(msg.pane, msg.text)
 				if strings.HasPrefix(m.actionNote, "read failed") {
 					m.actionNote = ""
@@ -249,10 +264,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickDetail:
 		if !m.detailOpen {
 			m.detailTicking = false
+			m.detailReading = false
 			return m, nil
 		}
+		next := scheduleDetailTick()
+		if m.detailReading {
+			return m, next
+		}
 		m.detailSeq++
-		return m, tea.Batch(fetchDetail(m.bin, m.transcriptOf, m.detailSeq), tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickDetail(t) }))
+		readCmd := fetchDetail(m.bin, m.transcriptOf, m.detailSeq)
+		m.detailReading = readCmd != nil
+		if readCmd != nil {
+			m.detailReadSeq = m.detailSeq
+		}
+		if readCmd == nil {
+			return m, next
+		}
+		return m, tea.Batch(readCmd, next)
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 	case tea.KeyMsg:
@@ -487,7 +515,15 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, jumpTab(m.bin, *row)
 	case "r":
 		m.detailSeq++
-		return m, fetchDetail(m.bin, m.transcriptOf, m.detailSeq)
+		if m.detailReading {
+			return m, nil
+		}
+		cmd := fetchDetail(m.bin, m.transcriptOf, m.detailSeq)
+		m.detailReading = cmd != nil
+		if cmd != nil {
+			m.detailReadSeq = m.detailSeq
+		}
+		return m, cmd
 	}
 	return m, nil
 }
@@ -523,7 +559,17 @@ func (m Model) flipDetail(delta int) (tea.Model, tea.Cmd) {
 	m.transcript = m.previews[row.PaneID]
 	m.syncScroll()
 	m.detailSeq++
-	return m, fetchDetail(m.bin, row.PaneID, m.detailSeq)
+	if m.detailReading {
+		// Invalidate the old result, but let the old command finish before the
+		// next timer starts a read for the newly selected pane.
+		return m, nil
+	}
+	cmd := fetchDetail(m.bin, row.PaneID, m.detailSeq)
+	m.detailReading = cmd != nil
+	if cmd != nil {
+		m.detailReadSeq = m.detailSeq
+	}
+	return m, cmd
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -641,10 +687,18 @@ func (m Model) openDetail() (tea.Model, tea.Cmd) {
 	m.transcriptOf = row.PaneID
 	m.actionNote = ""
 	m.detailSeq++
-	cmds := []tea.Cmd{fetchDetail(m.bin, row.PaneID, m.detailSeq)}
+	readCmd := fetchDetail(m.bin, row.PaneID, m.detailSeq)
+	m.detailReading = readCmd != nil
+	if readCmd != nil {
+		m.detailReadSeq = m.detailSeq
+	}
+	cmds := []tea.Cmd{}
+	if readCmd != nil {
+		cmds = append(cmds, readCmd)
+	}
 	if !m.detailTicking {
 		m.detailTicking = true
-		cmds = append(cmds, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickDetail(t) }))
+		cmds = append(cmds, scheduleDetailTick())
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -653,6 +707,7 @@ func (m *Model) closeDetail() {
 	m.detailOpen = false
 	m.detailReply = false
 	m.detailScroll = 0
+	m.detailReading = false
 	m.inputOn = false
 	m.input.Blur()
 }
@@ -1006,9 +1061,13 @@ func fetchDetail(bin, pane string, seq int) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		text, err := herdr.ReadRecent(bin, pane, 120)
+		text, err := herdr.ReadRecent(bin, pane, detailReadLines)
 		return readMsg{pane: pane, text: text, seq: seq, err: err}
 	}
+}
+
+func scheduleDetailTick() tea.Cmd {
+	return tea.Tick(detailRefreshPeriod, func(t time.Time) tea.Msg { return tickDetail(t) })
 }
 
 func sendPrompt(bin, pane, text string) tea.Cmd {

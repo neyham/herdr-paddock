@@ -18,6 +18,7 @@ var (
 	reWorkedFor  = regexp.MustCompile(`(?i)worked for\s+\d`)
 	reCwdBranch  = regexp.MustCompile(`(?i)(?:^|[\s])(?:~/|/|[a-zA-Z]:\\)\S.*\s·\s+[A-Za-z0-9._/-]+$`)
 	reAutoStatus = regexp.MustCompile(`(?i)^auto\s·`)
+	reTaskCount  = regexp.MustCompile(`(?i)^\d+\s+tasks?$`)
 )
 
 // parseCardTitle extracts the task from herdr terminal titles that follow the
@@ -176,7 +177,8 @@ func barrierLine(ln string) bool {
 // meters, model banners. Only applied while peeling the tail of a pane, so
 // broad keywords are safe.
 func footerHint(ln string) bool {
-	low := strings.ToLower(ln)
+	t := strings.TrimSpace(ln)
+	low := strings.ToLower(t)
 	for _, kw := range []string{
 		"ctrl+", "shift+tab", "for shortcuts", "tokens", "auto-compact",
 		"context left", "add a follow-up", "esc to", "enter to send",
@@ -191,6 +193,9 @@ func footerHint(ln string) bool {
 		return true
 	}
 	if reAutoStatus.MatchString(strings.TrimSpace(ln)) {
+		return true
+	}
+	if reTaskCount.MatchString(t) {
 		return true
 	}
 	return false
@@ -256,23 +261,42 @@ func peelableChrome(ln string, cursorCtx bool) bool {
 	return cursorCtx && cwdBranchLine(t)
 }
 
-// dropAgentChrome cuts off the agent CLI's own input box and bottom bars.
-// Every agent TUI (pi/grok/codex/agy/cursor…) draws its input area under a
-// rule or box border at the very bottom of the pane, so everything at or
-// below the last input-frame row is the agent's chrome, not its output. After
-// the cut, trailing hint/blank/barrier rows are peeled until real content shows.
+func frameHasChromeTail(lines []string, frame int, cursorCtx bool) bool {
+	sawChrome := false
+	for _, ln := range lines[frame+1:] {
+		if peelableChrome(ln, cursorCtx) {
+			sawChrome = true
+			continue
+		}
+		// A meaningful line after a frame means that frame may belong to the
+		// agent's actual answer. Cutting there would truncate the answer.
+		return false
+	}
+	return sawChrome
+}
+
+// dropAgentChrome removes an agent CLI's input box and bottom bars when the
+// tail is recognizable as chrome. A frame inside the answer is retained when
+// meaningful text follows it; after a confirmed cut, trailing hints and bars
+// are peeled until real content shows.
 func dropAgentChrome(lines []string) []string {
+	frameCtx := cursorFooterContext(lines)
 	cut := -1
 	for i, ln := range lines {
-		if inputFrameLine(ln) {
+		if inputFrameLine(ln) && frameHasChromeTail(lines, i, frameCtx) {
 			cut = i
+			break
 		}
 	}
-	// Input boxes hug the bottom of the pane; a lone divider higher up is
-	// probably real output (shell panes), so leave those alone.
-	if cut >= 0 && cut >= len(lines)-12 {
+	// Only cut at a frame when everything after it is known chrome. A
+	// decorative box in the agent's answer can sit near the tail too; cutting
+	// blindly at the last barrier used to discard the answer after that box.
+	if cut >= 0 {
 		lines = lines[:cut]
 	}
+	// Cursor's cwd/branch footer is only chrome when the footer markers are
+	// still present. Recompute after the frame cut so an answer line with the
+	// same shape is not peeled from the new tail.
 	ctx := cursorFooterContext(lines)
 	for len(lines) > 0 {
 		if !peelableChrome(lines[len(lines)-1], ctx) {
