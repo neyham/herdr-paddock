@@ -326,6 +326,14 @@ func (m Model) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G":
 		m.moveTo(len(feedTabs(m)) - 1)
 		return m, fetchFeedReads(m, false)
+	case "pgup", "ctrl+u":
+		m.pageWall(-1)
+		m.actionNote = ""
+		return m, fetchFeedReads(m, false)
+	case "pgdown", "ctrl+d":
+		m.pageWall(1)
+		m.actionNote = ""
+		return m, fetchFeedReads(m, false)
 	case "i", "/":
 		row := m.selectedRow()
 		if row == nil {
@@ -762,6 +770,75 @@ func (m *Model) moveSpatial(dir string) {
 		m.selID = feed[best].TabID
 		m.syncScroll()
 	}
+}
+
+func feedMaxY(slots []cardSlot) int {
+	maxY := 0
+	for _, s := range slots {
+		if s.y+s.h > maxY {
+			maxY = s.y + s.h
+		}
+	}
+	return maxY
+}
+
+func snapScrollDown(slots []cardSlot, target int) int {
+	best := 0
+	for _, s := range slots {
+		if s.y <= target && s.y > best {
+			best = s.y
+		}
+	}
+	return best
+}
+
+// pageWall jumps the wall by about one viewport. The glance viewport only
+// follows selection, so we pick a target scroll first, snap it to a card
+// top, then select the card that sits at that new top.
+func (m *Model) pageWall(dir int) {
+	slots, scroll, feed := glanceSlots(*m, m.width, glanceFeedH(m.height))
+	viewH := glanceFeedH(m.height)
+	if len(feed) == 0 || len(slots) == 0 {
+		return
+	}
+	maxY := feedMaxY(slots)
+	limit := maxY - viewH
+	if limit < 0 {
+		limit = 0
+	}
+	target := scroll + dir*viewH
+	if target < 0 {
+		target = 0
+	}
+	if target > limit {
+		target = limit
+	}
+	target = snapScrollDown(slots, target)
+	if target == scroll {
+		if dir < 0 {
+			m.moveTo(0)
+		} else {
+			m.moveTo(len(feed) - 1)
+		}
+		return
+	}
+	best, bestY := -1, 1<<30
+	for _, s := range slots {
+		if s.y >= target && s.y < bestY {
+			best, bestY = s.idx, s.y
+		}
+	}
+	if best < 0 {
+		best = slots[len(slots)-1].idx
+		for _, s := range slots {
+			if s.y > slots[best].y {
+				best = s.idx
+			}
+		}
+	}
+	m.selID = feed[best].TabID
+	m.feedScroll = target
+	m.syncScroll()
 }
 
 func (m *Model) moveTo(idx int) {

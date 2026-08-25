@@ -41,6 +41,14 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		return tea.KeyMsg{Type: tea.KeyRight}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
+	case "ctrl+u":
+		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	case "ctrl+d":
+		return tea.KeyMsg{Type: tea.KeyCtrlD}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -478,7 +486,29 @@ func TestAgentInputBoxAndFooterDropped(t *testing.T) {
 				"  ╰─────────────────────────────────────── Grok 4.6 (xhigh) · always-approve ─╯\n\n" +
 				"  Shift+Tab:mode  │  Ctrl+.:shortcuts\n",
 			want: "结算页",
-			bad:  []string{"Grok 4.6", "Shift+Tab", "❯", "▼", "always-approve"},
+			bad:  []string{"Grok 4.6", "Shift+Tab", "❯", "▼", "always-approve", "Checkout Revamp"},
+		},
+		{
+			name: "grok-titled-live",
+			raw: "手机上看到的瀑布流已经能点进去回复。\n\n" +
+				"  Worked for 9m48s\n" +
+				"  ╭───── 2026-08-08｜shop.example｜Checkout Payment Dashboard Load Fix ──╮\n" +
+				"  │ ❯                                                                  │\n" +
+				"  ╰──────── Weekly limit left: 3% · Grok 4.6 (xhigh) · always-approve ─╯\n" +
+				"  Shift+Tab:mode  │  Ctrl+.:shortcuts\n",
+			want: "瀑布流",
+			bad:  []string{"Worked for", "Checkout Payment", "Grok 4.6", "Shift+Tab", "Weekly limit", "always-approve"},
+		},
+		{
+			name: "grok-recap-kept",
+			raw: "┃  ◆ Recap\n" +
+				"┃  手机上看到的瀑布流能点进去回复。\n\n" +
+				"  Worked for 1m39s\n" +
+				"  ╭───── 2026-08-08｜shop.example｜Checkout Payment Dashboard Load Fix ──╮\n" +
+				"  │ ❯                                                                  │\n" +
+				"  ╰──────── Weekly limit left: 2% · Grok 4.6 (xhigh) · always-approve ─╯\n",
+			want: "Recap",
+			bad:  []string{"Worked for", "Checkout Payment", "always-approve"},
 		},
 		{
 			name: "codex",
@@ -501,6 +531,15 @@ func TestAgentInputBoxAndFooterDropped(t *testing.T) {
 				"  ~/projects/demo · main\n",
 			want: "同一格",
 			bad:  []string{"Add a follow-up", "1 task", "Fable 5", "tokens", "· main"},
+		},
+		{
+			name: "cursor-live",
+			raw: "the feed still shows the last agent paragraph.\n\n" +
+				"  → Add a follow-up\n" +
+				"  Auto · 8.4%                                            Run Everything\n" +
+				"  ~/projects/demo · main\n",
+			want: "last agent paragraph",
+			bad:  []string{"Add a follow-up", "Run Everything", "Auto ·", "herdr-paddock · main"},
 		},
 		{
 			name: "agy",
@@ -548,6 +587,53 @@ func TestBlockedDialogQuestionSurvivesChromeCut(t *testing.T) {
 		if !strings.Contains(joined, need) {
 			t.Fatalf("blocked dialog content %q was cut: %q", need, joined)
 		}
+	}
+}
+
+func TestWorkedForProseSurvives(t *testing.T) {
+	raw := "this approach worked for the parser on noisy titles.\n"
+	joined := strings.Join(clipTranscript(raw, 60, 12), " ")
+	if !strings.Contains(joined, "worked for the parser") {
+		t.Fatalf("prose mentioning worked for was cut: %q", joined)
+	}
+}
+
+func TestCwdBranchProseWithoutCursorFooterSurvives(t *testing.T) {
+	raw := "clone it into ~/projects/demo · main and run the tests.\n"
+	joined := strings.Join(clipTranscript(raw, 80, 12), " ")
+	if !strings.Contains(joined, "~/projects/demo") {
+		t.Fatalf("path prose was peeled as cursor footer: %q", joined)
+	}
+}
+
+func TestWallPageKeysJumpViewport(t *testing.T) {
+	m := sampleModel(40, 16)
+	m.snap.Tabs = nil
+	m.previews = map[string]string{}
+	body := strings.Repeat("card body line\n", 8)
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("t%d", i)
+		m.snap.Tabs = append(m.snap.Tabs, model.TabRow{
+			TabID: id, PaneID: "p" + id, WSLabel: "infra", TabLabel: id, Agent: "pi", Status: "idle", Title: "task " + id,
+		})
+		m.previews["p"+id] = body
+	}
+	m.selID = "t0"
+	m.syncScroll()
+	startScroll, startSel := m.feedScroll, m.selID
+	next, _ := m.handleKey(keyMsg("pgdown"))
+	m = next.(Model)
+	if m.feedScroll <= startScroll {
+		t.Fatalf("pgdown should page the wall down, scroll %d -> %d sel %s", startScroll, m.feedScroll, m.selID)
+	}
+	if m.selID == startSel {
+		t.Fatalf("pgdown should move selection, still %s", m.selID)
+	}
+	paged := m.feedScroll
+	next, _ = m.handleKey(keyMsg("pgup"))
+	m = next.(Model)
+	if m.feedScroll >= paged {
+		t.Fatalf("pgup should page the wall up, scroll %d -> %d", paged, m.feedScroll)
 	}
 }
 

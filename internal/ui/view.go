@@ -749,9 +749,9 @@ func renderHelp(w, h int) []string {
 	body := []string{
 		stWool.Render("🐑") + "  " + stBrand.Render("PADDOCK") + stDim.Render("  glance over the flock"),
 		"",
-		"  " + stKey.Render("↑↓←→") + " move (hjkl)   " + stKey.Render("enter") + " zoom into the card",
-		"  " + stKey.Render("o") + " jump to herdr   " + stKey.Render("i") + " quick reply",
-		"  " + stDim.Render("zoomed: j/k next post · i reply · enter send · esc back"),
+		"  " + stKey.Render("↑↓←→") + " move (hjkl)   " + stKey.Render("pgup/pgdn") + " page the feed",
+		"  " + stKey.Render("enter") + " zoom   " + stKey.Render("o") + " jump to herdr   " + stKey.Render("i") + " quick reply",
+		"  " + stDim.Render("zoomed: j/k next post · i reply · pgup/pgdn scroll · esc back"),
 		"",
 		"  " + stKey.Render("r") + " refresh   " + stKey.Render("q") + " quit   " + stKey.Render("?") + " close",
 	}
@@ -822,10 +822,11 @@ func usefulLine(ln string) string {
 	if ln == "" {
 		return ""
 	}
-	if barrierLine(ln) { // rules and box borders, labeled or not
+	if barrierLine(ln) || inputFrameLine(ln) { // rules and box borders, labeled or not
 		return ""
 	}
 	ln = strings.Trim(ln, "│┃|")
+	ln = strings.TrimRight(ln, "█")
 	ln = strings.TrimSpace(ln)
 	if ln == "" || ln == "❯" || ln == "█" {
 		return ""

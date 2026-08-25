@@ -13,8 +13,11 @@ var (
 	reDateSeg = regexp.MustCompile(`^20\d\d-\d\d-\d\d$`)
 	reOptRow  = regexp.MustCompile(`^\d+[.)][ \t]`)
 	// agent chrome footers: token counters like "↑96k ↓37k R5.9M $0.020 12.6%/1.0M"
-	reFooterUp = regexp.MustCompile(`[↑↓]\s*\d`)
-	reCostPct  = regexp.MustCompile(`\$\d+(\.\d+)?|\d+(\.\d+)?%/`)
+	reFooterUp   = regexp.MustCompile(`[↑↓]\s*\d`)
+	reCostPct    = regexp.MustCompile(`\$\d+(\.\d+)?|\d+(\.\d+)?%/`)
+	reWorkedFor  = regexp.MustCompile(`(?i)worked for\s+\d`)
+	reCwdBranch  = regexp.MustCompile(`(?i)(?:^|[\s])(?:~/|/|[a-zA-Z]:\\)\S.*\s·\s+[A-Za-z0-9._/-]+$`)
+	reAutoStatus = regexp.MustCompile(`(?i)^auto\s·`)
 )
 
 // parseCardTitle extracts the task from herdr terminal titles that follow the
@@ -177,24 +180,91 @@ func footerHint(ln string) bool {
 	for _, kw := range []string{
 		"ctrl+", "shift+tab", "for shortcuts", "tokens", "auto-compact",
 		"context left", "add a follow-up", "esc to", "enter to send",
-		"[default]", "to expand", "always-approve",
+		"[default]", "to expand", "always-approve", "run everything",
+		"files edited",
 	} {
 		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	if reWorkedFor.MatchString(ln) {
+		return true
+	}
+	if reAutoStatus.MatchString(strings.TrimSpace(ln)) {
+		return true
+	}
+	return false
+}
+
+func tableRule(ln string) bool {
+	t := strings.TrimSpace(ln)
+	if t == "" {
+		return false
+	}
+	r := []rune(t)[0]
+	return r == '├' || r == '┤' || strings.ContainsRune(t, '┼')
+}
+
+// inputFrameLine is a TUI input-box border near the pane tail: corner-framed
+// rows (even with a long title), half-block rules, or a ratio barrier that is
+// not a markdown/table divider.
+func inputFrameLine(ln string) bool {
+	t := strings.TrimSpace(ln)
+	if t == "" || tableRule(t) {
+		return false
+	}
+	rs := []rune(t)
+	first, last := rs[0], rs[len(rs)-1]
+	if (first == '╭' || first == '┌') && (last == '╮' || last == '┐') {
+		return true
+	}
+	if (first == '╰' || first == '└') && (last == '╯' || last == '┘') {
+		return true
+	}
+	return barrierLine(t)
+}
+
+func cwdBranchLine(ln string) bool {
+	return reCwdBranch.MatchString(strings.TrimSpace(ln))
+}
+
+func cursorFooterContext(lines []string) bool {
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < 8; i-- {
+		ln := strings.TrimSpace(lines[i])
+		if ln == "" {
+			continue
+		}
+		seen++
+		low := strings.ToLower(ln)
+		if strings.Contains(low, "run everything") || strings.Contains(low, "files edited") ||
+			strings.Contains(low, "add a follow-up") || reAutoStatus.MatchString(ln) {
 			return true
 		}
 	}
 	return false
 }
 
+func peelableChrome(ln string, cursorCtx bool) bool {
+	t := strings.TrimSpace(ln)
+	if t == "" || inputFrameLine(t) || barrierLine(t) || looksLikeChrome(t) || footerHint(t) {
+		return true
+	}
+	if usefulLine(ln) == "" {
+		return true
+	}
+	return cursorCtx && cwdBranchLine(t)
+}
+
 // dropAgentChrome cuts off the agent CLI's own input box and bottom bars.
 // Every agent TUI (pi/grok/codex/agy/cursor…) draws its input area under a
 // rule or box border at the very bottom of the pane, so everything at or
-// below the last barrier row is the agent's chrome, not its output. After the
-// cut, trailing hint/blank/barrier rows are peeled until real content shows.
+// below the last input-frame row is the agent's chrome, not its output. After
+// the cut, trailing hint/blank/barrier rows are peeled until real content shows.
 func dropAgentChrome(lines []string) []string {
 	cut := -1
 	for i, ln := range lines {
-		if barrierLine(strings.TrimSpace(ln)) {
+		if inputFrameLine(ln) {
 			cut = i
 		}
 	}
@@ -203,9 +273,9 @@ func dropAgentChrome(lines []string) []string {
 	if cut >= 0 && cut >= len(lines)-12 {
 		lines = lines[:cut]
 	}
+	ctx := cursorFooterContext(lines)
 	for len(lines) > 0 {
-		ln := strings.TrimSpace(lines[len(lines)-1])
-		if ln != "" && !barrierLine(ln) && !looksLikeChrome(ln) && !footerHint(ln) {
+		if !peelableChrome(lines[len(lines)-1], ctx) {
 			break
 		}
 		lines = lines[:len(lines)-1]

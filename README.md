@@ -111,6 +111,7 @@ with `j`/`k`, and the reply box is one tap away.
 | Wall | |
 | --- | --- |
 | `↑↓←→` / `hjkl` | move like a newspaper: up/down walk the column, then continue into the next |
+| `pgup` / `pgdn` (`ctrl+u` / `ctrl+d`) | page the feed by about one screen |
 | `enter` / tap | zoom into the card |
 | `i` / `/` | quick reply from the wall |
 | `o` | jump to the tab in herdr |
@@ -120,7 +121,7 @@ with `j`/`k`, and the reply box is one tap away.
 | --- | --- |
 | `j k` / `←→` | flip to the next / previous post |
 | `i` / `enter` | reply · `enter` sends, `esc` back to reading |
-| `↑↓` | scroll the transcript |
+| `↑↓` / `pgup` / `pgdn` | scroll the transcript |
 | `ctrl+o` | jump to the tab in herdr |
 | `esc` | back to the wall |
 
@@ -128,8 +129,11 @@ with `j`/`k`, and the reply box is one tap away.
 
 Agent CLIs (pi, claude code, codex, cursor, grok, opencode, gemini…) draw
 their own input box and status bars at the bottom of the pane. Paddock cuts
-everything below the last border/rule line in the pane tail, then peels
-remaining hint rows — so cards show what the agent *said*, not its chrome.
+everything at or below the last input-box frame in the pane tail (corner
+borders count even when they carry a long title), then peels remaining hint
+rows — so cards show what the agent *said*, not its chrome. Column count
+follows the terminal width, so a full-window `paddock` and herdr's 92%
+plugin popup can show a different number of columns without being two UIs.
 The heuristics are tested against fixtures shaped like each agent's real
 pane tail; if your agent's footer leaks through, open an issue with the pane
 tail text and it's an easy fix.
