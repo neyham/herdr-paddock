@@ -20,6 +20,8 @@ type SourceState struct {
 	UpdatedAt time.Time
 }
 
+// TabRow describes one agent pane and its parent tab. Split tabs have one row
+// per agent; tabs without agents retain a row with an empty PaneID.
 type TabRow struct {
 	TabID       string
 	WorkspaceID string
@@ -35,6 +37,13 @@ type TabRow struct {
 	StateSeq    int
 }
 
+func (t TabRow) ID() string {
+	if t.PaneID != "" {
+		return t.PaneID
+	}
+	return t.TabID
+}
+
 type Snapshot struct {
 	Herdr      SourceState
 	Tabs       []TabRow
@@ -42,13 +51,10 @@ type Snapshot struct {
 }
 
 func IsSelf(t TabRow, selfTab, selfPane string) bool {
-	if selfTab != "" && t.TabID == selfTab {
-		return true
+	if selfPane != "" {
+		return t.PaneID == selfPane
 	}
-	if selfPane != "" && t.PaneID == selfPane {
-		return true
-	}
-	return false
+	return selfTab != "" && t.TabID == selfTab
 }
 
 func IsAgentTab(t TabRow) bool {
@@ -65,7 +71,7 @@ func IsAgentTab(t TabRow) bool {
 
 // FeedTabs is the glance deck: every real agent except this paddock pane.
 // blocked / working first so you flip into the ones that need you.
-// Within a status group tabs keep first-seen order (via the order map) so
+// Within a status group panes keep first-seen order (via the order map) so
 // cards don't swap places under the reader on every snapshot.
 func FeedTabs(tabs []TabRow, selfTab, selfPane string, order map[string]int) []TabRow {
 	var blocked, working, done, idle []TabRow
@@ -89,11 +95,11 @@ func FeedTabs(tabs []TabRow, selfTab, selfPane string, order map[string]int) []T
 			return
 		}
 		sort.SliceStable(group, func(i, j int) bool {
-			oi, ok := order[group[i].TabID]
+			oi, ok := order[group[i].ID()]
 			if !ok {
 				oi = 1 << 30
 			}
-			oj, ok := order[group[j].TabID]
+			oj, ok := order[group[j].ID()]
 			if !ok {
 				oj = 1 << 30
 			}

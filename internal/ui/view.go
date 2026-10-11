@@ -110,7 +110,7 @@ func renderGlance(m Model, w, h int) []string {
 		}
 	}
 	if feedH < h {
-		canvas = append(canvas, composeBar(m, w, feed[cur]))
+		canvas = append(canvas, composeBar(m, w))
 	}
 	return clip(canvas, h)
 }
@@ -332,17 +332,16 @@ func glanceFeedH(viewH int) int {
 	return h
 }
 
-func composeBar(m Model, w int, t model.TabRow) string {
+func composeBar(m Model, w int) string {
 	in := m.input
 	if m.inputOn {
-		who := t.TabLabel
-		if who == "" {
-			who = t.WSLabel
+		in.Placeholder = "agent left · esc back"
+		for _, row := range m.snap.Tabs {
+			if m.composePane != "" && row.PaneID == m.composePane {
+				in.Placeholder = "reply " + cardTitleFor(row) + " · enter send · esc back"
+				break
+			}
 		}
-		if who == "" {
-			who = "agent"
-		}
-		in.Placeholder = "reply " + who + " · enter send · esc back"
 	} else {
 		in.Placeholder = "i reply · enter open · o jump · q quit"
 	}
@@ -477,8 +476,8 @@ func isGenericShellTitle(title string) bool {
 	return false
 }
 
-func (m Model) ageOf(tabID string) string {
-	if a, ok := m.ages[tabID]; ok {
+func (m Model) ageOf(id string) string {
+	if a, ok := m.ages[id]; ok {
 		return fmtAge(time.Since(a.at))
 	}
 	return ""
@@ -503,7 +502,7 @@ func renderAgentCard(m Model, t model.TabRow, idx, total, w, h int, selected boo
 	if word := statusWord(status); word != "" {
 		extraBits = append(extraBits, word)
 	}
-	if age := m.ageOf(t.TabID); age != "" && w >= 24 {
+	if age := m.ageOf(t.ID()); age != "" && w >= 24 {
 		extraBits = append(extraBits, stDim.Render(age))
 	}
 	extra := strings.Join(extraBits, " ")
@@ -601,6 +600,58 @@ func blankBlock(w, h int) []string {
 
 // ---------------------------------------------------------------- detail
 
+// detailLines is shared by rendering and scroll bounds so wrapping, empty
+// states, and local reply echoes all use the same line count.
+func detailLines(m Model, w int) []string {
+	row := m.detailRow()
+	status := ""
+	if row != nil {
+		status = row.Status
+	}
+	budget := detailBudget(w)
+	var lines []string
+	if row == nil {
+		lines = []string{stErr.Render(" this agent is gone · esc back")}
+	} else {
+		raw := clipTranscript(m.transcript, budget, detailMaxLines)
+		if len(raw) == 0 {
+			lines = []string{stDim.Render(" nothing here yet · give it a second")}
+		} else {
+			qs := -1
+			if status == "blocked" {
+				qs = questionStart(raw)
+			}
+			for i, ln := range raw {
+				if qs >= 0 && i >= qs {
+					lines = append(lines, stText.Render(" "+ln))
+				} else {
+					lines = append(lines, stBody.Render(" "+ln))
+				}
+			}
+		}
+		for _, e := range m.echoes {
+			if row.PaneID == "" || e.pane != m.transcriptOf {
+				continue
+			}
+			sty := stKey
+			prefix := "you › "
+			if e.failed {
+				sty = stErr
+				prefix = "you ✗ "
+			}
+			for _, ln := range layout.Wrap(prefix+e.text, budget) {
+				lines = append(lines, sty.Render(" "+ln))
+			}
+		}
+	}
+
+	return lines
+}
+
+func detailAreaH(height int) int {
+	return max(3, max(8, height)-5)
+}
+
 // renderDetail is the "post" view: full transcript, reply box, no jump needed.
 func renderDetail(m Model, w, h int) []string {
 	row := m.detailRow()
@@ -629,11 +680,11 @@ func renderDetail(m Model, w, h int) []string {
 		if a := displayAgent(kind, w < 60); a != "" && a != "shell" {
 			bits = append(bits, a)
 		}
-		if age := m.ageOf(row.TabID); age != "" {
+		if age := m.ageOf(row.ID()); age != "" {
 			bits = append(bits, age)
 		}
 		feed := feedTabs(m)
-		if idx := selIndex(feed, m.detailTab); idx >= 0 && len(feed) > 1 {
+		if idx := selIndex(feed, row.ID()); idx >= 0 && len(feed) > 1 {
 			bits = append(bits, fmt.Sprintf("%d/%d", idx+1, len(feed)))
 		}
 		extra = stDim.Render(strings.Join(bits, " · "))
@@ -644,47 +695,8 @@ func renderDetail(m Model, w, h int) []string {
 		head = chipFor(status)
 	}
 
-	areaH := h - 4 // top border, separator, input, bottom border
-	if areaH < 3 {
-		areaH = 3
-	}
-
-	budget := detailBudget(w)
-	var lines []string
-	if row == nil {
-		lines = []string{stErr.Render(" this tab is gone · esc back")}
-	} else {
-		raw := clipTranscript(m.transcript, budget, detailMaxLines)
-		if len(raw) == 0 {
-			lines = []string{stDim.Render(" nothing here yet · give it a second")}
-		} else {
-			qs := -1
-			if status == "blocked" {
-				qs = questionStart(raw)
-			}
-			for i, ln := range raw {
-				if qs >= 0 && i >= qs {
-					lines = append(lines, stText.Render(" "+ln))
-				} else {
-					lines = append(lines, stBody.Render(" "+ln))
-				}
-			}
-		}
-		for _, e := range m.echoes {
-			if row.PaneID == "" || e.pane != row.PaneID {
-				continue
-			}
-			sty := stKey
-			prefix := "you › "
-			if e.failed {
-				sty = stErr
-				prefix = "you ✗ "
-			}
-			for _, ln := range layout.Wrap(prefix+e.text, budget) {
-				lines = append(lines, sty.Render(" "+ln))
-			}
-		}
-	}
+	areaH := detailAreaH(h + 1)
+	lines := detailLines(m, w)
 
 	eff := m.detailScroll
 	if maxScroll := max(0, len(lines)-areaH); eff > maxScroll {

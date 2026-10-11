@@ -365,7 +365,7 @@ func TestDetailFlipsBetweenPosts(t *testing.T) {
 	if m.detailTab != "w5:t6" {
 		t.Fatalf("j should flip to the next post, got %s", m.detailTab)
 	}
-	if m.selID != "w5:t6" {
+	if m.selID != "p1" {
 		t.Fatal("wall selection should follow the flip")
 	}
 	next, _ = m.handleKey(keyMsg("k"))
@@ -424,14 +424,14 @@ func TestScrollDoesNotSnapOnSelect(t *testing.T) {
 	}
 }
 
-func TestSelectionFollowsTabID(t *testing.T) {
+func TestSelectionFollowsPaneID(t *testing.T) {
 	m := sampleModel(80, 24)
-	m.selID = "w5:t6" // hooks, currently working → second in feed
+	m.selID = "p1" // hooks, currently working → second in feed
 	// hooks turns blocked: it moves to the front, selection must follow
 	m.snap.Tabs[0].Status = "blocked"
 	feed := feedTabs(m)
 	if idx := selIndex(feed, m.selID); idx != 0 {
-		t.Fatalf("selection should follow the tab to its new slot, got %d", idx)
+		t.Fatalf("selection should follow the pane to its new slot, got %d", idx)
 	}
 }
 
@@ -805,6 +805,40 @@ func TestWorkedForProseSurvives(t *testing.T) {
 	}
 }
 
+func TestFooterKeywordsInAnswersSurvive(t *testing.T) {
+	for _, answer := range []string{
+		"Rotate expired API tokens before retrying.",
+		"Press ctrl+c to stop the development server.",
+		"Use Shift+Tab to navigate backwards.",
+		"The files edited are listed in the report.",
+		"Do not run everything until the database backup is ready.",
+		"You can add a follow-up after the review.",
+		"The [default] section sets the selected profile.",
+		"This approach worked for 3 years without changes.",
+		"The context left includes the user's latest request.",
+		"Disable auto-compact while investigating this issue.",
+		"1 task",
+	} {
+		t.Run(answer, func(t *testing.T) {
+			for _, footer := range []string{"", "\n──────────────────────────────\n❯\n? for shortcuts\n"} {
+				got := strings.Join(clipTranscript("The result follows.\n"+answer+footer, 120, 20), "\n")
+				if !strings.Contains(got, answer) {
+					t.Fatalf("answer was mistaken for chrome: %q", got)
+				}
+			}
+		})
+	}
+}
+
+func TestStructuredFooterMetersStillRemoved(t *testing.T) {
+	for _, footer := range []string{"3.75k tokens", "42% context left", "enter to send", "ctrl+o to expand", "shift+tab to cycle modes", "Worked for 11m 37s"} {
+		got := strings.Join(clipTranscript("Keep this answer.\n"+footer, 80, 10), "\n")
+		if got != "Keep this answer." {
+			t.Fatalf("footer leaked: %q", got)
+		}
+	}
+}
+
 func TestCwdBranchProseWithoutCursorFooterSurvives(t *testing.T) {
 	raw := "clone it into ~/projects/demo · main and run the tests.\n"
 	joined := strings.Join(clipTranscript(raw, 80, 12), " ")
@@ -825,7 +859,7 @@ func TestWallPageKeysJumpViewport(t *testing.T) {
 		})
 		m.previews["p"+id] = body
 	}
-	m.selID = "t0"
+	m.selID = "pt0"
 	m.syncScroll()
 	startScroll, startSel := m.feedScroll, m.selID
 	next, _ := m.handleKey(keyMsg("pgdown"))
@@ -849,13 +883,13 @@ func TestTapLockedAtPressSurvivesReflow(t *testing.T) {
 	// finger lands on the second column card (hooks / w5:t6)
 	next, _ := m.handleMouse(mouseMsg(45, 2, tea.MouseActionPress, tea.MouseButtonLeft))
 	m = next.(Model)
-	if m.pressTab != "w5:t6" {
-		t.Fatalf("press should lock the card under the finger, got %q", m.pressTab)
+	if m.pressID != "p1" {
+		t.Fatalf("press should lock the card under the finger, got %q", m.pressID)
 	}
 	// tap wobble fires wheel events while the finger is down: must not scroll
 	next, _ = m.handleMouse(mouseMsg(45, 2, tea.MouseActionPress, tea.MouseButtonWheelDown))
 	m = next.(Model)
-	if m.selID == "w5:t6" {
+	if m.selID == "p1" {
 		t.Fatal("wheel during a pending tap must not move the selection")
 	}
 	// release a cell off (finger roll): still the locked card, straight in
@@ -880,7 +914,7 @@ func gridModel() Model {
 		})
 		m.previews["p"+id] = "line one\nline two"
 	}
-	m.selID = "t0"
+	m.selID = "pt0"
 	return m
 }
 
@@ -893,20 +927,20 @@ func TestArrowsFollowGeometry(t *testing.T) {
 			t.Fatalf("%s should land on %s, got %s", key, want, m.selID)
 		}
 	}
-	step("down", "t2")  // same column, one below
-	step("right", "t3") // neighbor column, same row
-	step("up", "t1")    // back up inside the right column
+	step("down", "pt2")  // same column, one below
+	step("right", "pt3") // neighbor column, same row
+	step("up", "pt1")    // back up inside the right column
 	// newspaper flow: off the top of a column resumes at the bottom of the
 	// column to its left, off the bottom at the top of the column to its right
-	step("up", "t2")   // top of right column -> bottom of left column
-	step("down", "t1") // bottom of left column -> top of right column
+	step("up", "pt2")   // top of right column -> bottom of left column
+	step("down", "pt1") // bottom of left column -> top of right column
 	// only the wall's true corners stop
-	m.selID = "t0"
-	step("up", "t0")
-	step("left", "t0")
-	m.selID = "t3"
-	step("down", "t3")
-	step("right", "t3")
+	m.selID = "pt0"
+	step("up", "pt0")
+	step("left", "pt0")
+	m.selID = "pt3"
+	step("down", "pt3")
+	step("right", "pt3")
 }
 
 func TestSelectedCardFloats(t *testing.T) {

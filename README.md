@@ -10,8 +10,9 @@ full desktop one.
 
 ![the paddock wall](assets/paddock-demo.gif)
 
-Every card is one agent. Blocked agents bleat (baa!) in red at the top of
-the feed, working ones follow, done and idle sink to the bottom. What you read on
+Every card is one agent, including agents sharing a split tab. Each pane
+keeps its own reply draft as you browse. Blocked agents bleat (baa!) in red
+at the top of the feed, working ones follow, done and idle sink to the bottom. What you read on
 a card is the agent's actual output — its own input boxes, token meters, and
 keybinding bars are cleaned away.
 

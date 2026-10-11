@@ -1,6 +1,38 @@
 package herdr
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/neyham/herdr-paddock/internal/model"
+)
+
+func TestSnapshotKeepsAllSiblingAgents(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b agent
+	}{
+		{"blocked and focused working", agent{PaneID: "blocked", AgentStatus: "blocked"}, agent{PaneID: "working", AgentStatus: "working", Focused: true}},
+		{"both blocked", agent{PaneID: "a", AgentStatus: "blocked"}, agent{PaneID: "b", AgentStatus: "blocked", Focused: true}},
+		{"both working", agent{PaneID: "a", AgentStatus: "working"}, agent{PaneID: "b", AgentStatus: "working"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.a.TabID, c.b.TabID = "tab", "tab"
+			c.a.Agent, c.b.Agent = "codex", "claude"
+			order := map[string]int{c.a.PaneID: 0, c.b.PaneID: 1}
+			for _, agents := range [][]agent{{c.a, c.b}, {c.b, c.a}} {
+				rows, _ := snapshotRows(snapshot{Tabs: []tab{{TabID: "tab"}}, Agents: agents})
+				feed := model.FeedTabs(rows, "", "", order)
+				if len(feed) != 2 || feed[0].PaneID != c.a.PaneID || feed[1].PaneID != c.b.PaneID {
+					t.Fatalf("sibling missing or unstable order: %+v", feed)
+				}
+				if feed[0].Agent != c.a.Agent || feed[0].Status != c.a.AgentStatus || feed[1].Agent != c.b.Agent || feed[1].Status != c.b.AgentStatus {
+					t.Fatalf("metadata mixed between siblings: %+v", feed)
+				}
+			}
+		})
+	}
+}
 
 func TestSanitizeStripsTerminalInjection(t *testing.T) {
 	cases := map[string]struct{ in, want string }{

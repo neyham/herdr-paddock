@@ -33,13 +33,15 @@ type echoLine struct {
 
 type Model struct {
 	width, height int
-	selID         string // glance selection, by tab id so reorders don't steal it
+	selID         string // glance selection, by pane id so siblings stay distinct
 	quitConfirm   bool
 	showHelp      bool
 	snap          model.Snapshot
 	bin           string
 	input         textinput.Model
 	inputOn       bool
+	draftPane     string            // owner of the text currently loaded in input
+	drafts        map[string]string // drafts for other panes
 	detailOpen    bool
 	detailReply   bool // detail sub-mode: false = view/flip, true = typing
 	detailTicking bool // one detail refresh chain at a time
@@ -51,12 +53,16 @@ type Model struct {
 	feedScroll    int // glance viewport, moves minimally to keep selection visible
 	pressX        int // pending mouse press; click fires on release at the same cell
 	pressY        int
-	pressTab      string // card under the finger at press time; release opens it
+	pressID       string // card under the finger at press time; release opens it
 	transcript    string // detail transcript (long read)
 	transcriptOf  string
 	previews      map[string]string
 	lastRev       map[string]int // pane -> revision at last successful read
-	seen          map[string]int // tab -> first-seen order
+	paneReadSeq   int            // dispatch order shared by preview and detail reads
+	previewSeq    map[string]int // pane -> last accepted read
+	previewBusy   map[string]int // pane -> in-flight preview read
+	previewAfter  string         // round-robin cursor; busy panes cannot starve later cards
+	seen          map[string]int // TabRow.ID() -> first-seen order
 	seenN         int
 	ages          map[string]ageMark
 	echoes        []echoLine
@@ -65,8 +71,7 @@ type Model struct {
 	selfTab       string
 	selfPane      string
 	composePane   string // wall compose target, pinned when the input gains focus
-	composeTab    string
-	everSnapped   bool // at least one successful snapshot arrived
+	everSnapped   bool   // at least one successful snapshot arrived
 }
 
 type herdrMsg struct {
@@ -81,10 +86,11 @@ type focusMsg struct {
 }
 
 type readMsg struct {
-	pane string
-	text string
-	seq  int
-	err  error
+	pane     string
+	text     string
+	seq      int
+	cacheSeq int
+	err      error
 }
 
 type sendMsg struct {
@@ -96,6 +102,7 @@ type sendMsg struct {
 type previewsMsg struct {
 	byPane map[string]string
 	revs   map[string]int
+	seq    int
 }
 
 type tickHerdr time.Time
@@ -121,18 +128,21 @@ func New() Model {
 		bin = "herdr"
 	}
 	return Model{
-		width:    80,
-		height:   24,
-		bin:      bin,
-		input:    ti,
-		pressX:   -1,
-		pressY:   -1,
-		previews: map[string]string{},
-		lastRev:  map[string]int{},
-		seen:     map[string]int{},
-		ages:     map[string]ageMark{},
-		selfTab:  os.Getenv("HERDR_TAB_ID"),
-		selfPane: os.Getenv("HERDR_PANE_ID"),
+		width:       80,
+		height:      24,
+		bin:         bin,
+		input:       ti,
+		drafts:      map[string]string{},
+		pressX:      -1,
+		pressY:      -1,
+		previews:    map[string]string{},
+		lastRev:     map[string]int{},
+		previewSeq:  map[string]int{},
+		previewBusy: map[string]int{},
+		seen:        map[string]int{},
+		ages:        map[string]ageMark{},
+		selfTab:     os.Getenv("HERDR_TAB_ID"),
+		selfPane:    os.Getenv("HERDR_PANE_ID"),
 	}
 }
 
@@ -156,6 +166,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncScroll()
+		m.scrollDetail(0)
 		return m, nil
 	case herdrMsg:
 		if msg.err != nil {
@@ -178,17 +189,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.snap.Herdr.UpdatedAt = time.Now()
 			now := time.Now()
 			for _, t := range msg.tabs {
-				if _, ok := m.seen[t.TabID]; !ok {
-					m.seen[t.TabID] = m.seenN
+				id := t.ID()
+				if _, ok := m.seen[id]; !ok {
+					m.seen[id] = m.seenN
 					m.seenN++
 				}
-				if a, ok := m.ages[t.TabID]; !ok || a.seq != t.StateSeq {
-					m.ages[t.TabID] = ageMark{seq: t.StateSeq, at: now}
+				if a, ok := m.ages[id]; !ok || a.seq != t.StateSeq {
+					m.ages[id] = ageMark{seq: t.StateSeq, at: now}
 				}
 			}
 			m.fixSelection()
 		}
-		return m, fetchFeedReads(m, false)
+		m.scrollDetail(0)
+		return m.refreshFeed(false)
 	case focusMsg:
 		if msg.err != nil {
 			m.actionNote = "jump failed: " + msg.err.Error()
@@ -211,11 +224,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				oldTranscript := m.transcript
 				m.transcript = msg.text
-				m.previews[msg.pane] = msg.text // the wall benefits from the long read too
+				m.storePreview(msg.pane, msg.text, msg.cacheSeq)
 				if m.detailScroll > 0 {
 					m.detailScroll = preserveDetailScroll(m.detailScroll, oldTranscript, msg.text, m.width)
 				}
 				m.dropEchoedReplies(msg.pane, msg.text)
+				m.scrollDetail(0)
 				if strings.HasPrefix(m.actionNote, "read failed") {
 					m.actionNote = ""
 				}
@@ -223,12 +237,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case previewsMsg:
+		for id := range msg.revs {
+			if m.previewBusy[id] == msg.seq {
+				delete(m.previewBusy, id)
+			}
+		}
 		// byPane only carries successful reads (failures are retried next
 		// tick), so an empty string is a genuinely empty pane: store it to
 		// clear any stale preview and record the revision so the pane is
 		// not re-read every tick.
 		for id, text := range msg.byPane {
-			m.previews[id] = text
+			if !m.storePreview(id, text, msg.seq) {
+				continue
+			}
 			if rev, ok := msg.revs[id]; ok {
 				m.lastRev[id] = rev
 			}
@@ -238,17 +259,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.actionNote = "send failed: " + msg.err.Error()
 			m.markEchoFailed(msg.pane, msg.text)
-			// Restore the draft only when the input is still aimed at the
-			// pane the send was for — a late failure must not inject the old
-			// pane's text into a reply meant for another agent.
-			target := m.composePane
-			if m.detailOpen {
-				target = m.transcriptOf
-			}
-			if target == msg.pane && strings.TrimSpace(m.input.Value()) == "" {
-				m.input.SetValue(msg.text)
-				m.input.CursorEnd()
-			}
+			// Recover into this pane's draft, never into another agent's input
+			// or over text the user has written since the send.
+			m.restoreDraft(msg.pane, msg.text)
 		} else {
 			m.actionNote = "baa~ delivered"
 		}
@@ -257,7 +270,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(fetchHerdr(m.bin), tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickHerdr(t) }))
 	case tickSlow:
 		// safety net: even if revisions sit still, refresh visible cards
-		return m, tea.Batch(fetchFeedReads(m, true), tea.Tick(20*time.Second, func(t time.Time) tea.Msg { return tickSlow(t) }))
+		cmd := m.fetchFeedReads(true)
+		return m, tea.Batch(cmd, tea.Tick(20*time.Second, func(t time.Time) tea.Msg { return tickSlow(t) }))
 	case tickPulse:
 		m.pulse++
 		return m, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickPulse(t) })
@@ -272,7 +286,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, next
 		}
 		m.detailSeq++
-		readCmd := fetchDetail(m.bin, m.transcriptOf, m.detailSeq)
+		readCmd := m.fetchDetail(m.transcriptOf)
 		m.detailReading = readCmd != nil
 		if readCmd != nil {
 			m.detailReadSeq = m.detailSeq
@@ -331,50 +345,40 @@ func (m Model) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.actionNote = ""
 		return m, nil
 	case "r":
-		return m, tea.Batch(fetchHerdr(m.bin), fetchFeedReads(m, true))
+		cmd := m.fetchFeedReads(true)
+		return m, tea.Batch(fetchHerdr(m.bin), cmd)
 	case "j", "down":
 		m.moveSpatial("down")
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "k", "up":
 		m.moveSpatial("up")
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "h", "left":
 		m.moveSpatial("left")
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "l", "right":
 		m.moveSpatial("right")
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "g":
 		m.moveTo(0)
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "G":
 		m.moveTo(len(feedTabs(m)) - 1)
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "pgup", "ctrl+u":
 		m.pageWall(-1)
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "pgdown", "ctrl+d":
 		m.pageWall(1)
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case "i", "/":
-		row := m.selectedRow()
-		if row == nil {
-			return m, nil
-		}
-		// Pin the reply target now: the wall may reflow or remap the
-		// selection while the user types, and the draft must never follow
-		// it onto another agent's card.
-		m.composeTab, m.composePane = row.TabID, row.PaneID
-		m.inputOn = true
-		m.input.Focus()
-		m.actionNote = ""
-		return m, nil
+		return m.beginCompose()
 	case "o":
 		return m.jumpSelected()
 	case "enter", "ctrl+m":
@@ -419,6 +423,49 @@ func (m Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// Both keyboard and mouse compose pin the same target and load only its draft.
+func (m Model) beginCompose() (tea.Model, tea.Cmd) {
+	row := m.selectedRow()
+	if row == nil || row.PaneID == "" {
+		m.actionNote = "no agent pane"
+		return m, nil
+	}
+	m.composePane = row.PaneID
+	m.switchDraft(row.PaneID)
+	m.inputOn = true
+	m.actionNote = ""
+	cmd := m.input.Focus()
+	return m, cmd
+}
+
+func (m *Model) switchDraft(pane string) {
+	if pane == m.draftPane {
+		return
+	}
+	if m.draftPane != "" {
+		if text := m.input.Value(); text != "" {
+			m.drafts[m.draftPane] = text
+		} else {
+			delete(m.drafts, m.draftPane)
+		}
+	}
+	m.draftPane = pane
+	m.input.SetValue(m.drafts[pane])
+	m.input.CursorEnd()
+	delete(m.drafts, pane)
+}
+
+func (m *Model) restoreDraft(pane, text string) {
+	if pane == m.draftPane {
+		if m.input.Value() == "" {
+			m.input.SetValue(text)
+			m.input.CursorEnd()
+		}
+	} else if m.drafts[pane] == "" {
+		m.drafts[pane] = text
+	}
+}
+
 // paneAlive reports whether a pane is still present in the latest snapshot.
 func (m Model) paneAlive(pane string) bool {
 	for _, t := range m.snap.Tabs {
@@ -435,18 +482,16 @@ func (m Model) paneAlive(pane string) bool {
 func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
-		m.detailScroll++
+		m.scrollDetail(1)
 		return m, nil
 	case "down":
-		if m.detailScroll > 0 {
-			m.detailScroll--
-		}
+		m.scrollDetail(-1)
 		return m, nil
 	case "pgup":
-		m.detailScroll += 8
+		m.scrollDetail(8)
 		return m, nil
 	case "pgdown":
-		m.detailScroll = max(0, m.detailScroll-8)
+		m.scrollDetail(-8)
 		return m, nil
 	case "ctrl+o":
 		row := m.detailRow()
@@ -518,7 +563,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.detailReading {
 			return m, nil
 		}
-		cmd := fetchDetail(m.bin, m.transcriptOf, m.detailSeq)
+		cmd := m.fetchDetail(m.transcriptOf)
 		m.detailReading = cmd != nil
 		if cmd != nil {
 			m.detailReadSeq = m.detailSeq
@@ -534,7 +579,11 @@ func (m Model) flipDetail(delta int) (tea.Model, tea.Cmd) {
 	if len(feed) == 0 {
 		return m, nil
 	}
-	idx := selIndex(feed, m.detailTab)
+	current := m.transcriptOf
+	if current == "" {
+		current = m.detailTab
+	}
+	idx := selIndex(feed, current)
 	if idx < 0 {
 		idx = selIndex(feed, m.selID)
 	}
@@ -549,14 +598,15 @@ func (m Model) flipDetail(delta int) (tea.Model, tea.Cmd) {
 		idx = len(feed) - 1
 	}
 	row := feed[idx]
-	if row.TabID == m.detailTab {
+	if row.ID() == current {
 		return m, nil
 	}
-	m.selID = row.TabID
+	m.selID = row.ID()
 	m.detailTab = row.TabID
 	m.detailScroll = 0
 	m.transcriptOf = row.PaneID
 	m.transcript = m.previews[row.PaneID]
+	m.switchDraft(row.PaneID)
 	m.syncScroll()
 	m.detailSeq++
 	if m.detailReading {
@@ -564,7 +614,7 @@ func (m Model) flipDetail(delta int) (tea.Model, tea.Cmd) {
 		// next timer starts a read for the newly selected pane.
 		return m, nil
 	}
-	cmd := fetchDetail(m.bin, row.PaneID, m.detailSeq)
+	cmd := m.fetchDetail(row.PaneID)
 	m.detailReading = cmd != nil
 	if cmd != nil {
 		m.detailReadSeq = m.detailSeq
@@ -580,23 +630,23 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil // finger still down: tap wobble, not a scroll
 		}
 		if m.detailOpen {
-			m.detailScroll += 3
+			m.scrollDetail(3)
 			return m, nil
 		}
 		m.moveSpatial("up")
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	case tea.MouseButtonWheelDown:
 		if m.pressX >= 0 {
 			return m, nil
 		}
 		if m.detailOpen {
-			m.detailScroll = max(0, m.detailScroll-3)
+			m.scrollDetail(-3)
 			return m, nil
 		}
 		m.moveSpatial("down")
 		m.actionNote = ""
-		return m, fetchFeedReads(m, false)
+		return m.refreshFeed(false)
 	}
 	// A tap is press + release on (nearly) the same spot. The target card is
 	// locked at press time, so even if the wall reflows or scrolls under the
@@ -605,12 +655,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case tea.MouseActionPress:
 		if ev.Button == tea.MouseButtonLeft {
 			m.pressX, m.pressY = ev.X, ev.Y
-			m.pressTab = ""
+			m.pressID = ""
 			if !m.detailOpen && ev.Y < m.height-2 {
 				if i, hit := glanceIndexAt(m, ev.X, ev.Y); hit {
 					feed := feedTabs(m)
 					if i >= 0 && i < len(feed) {
-						m.pressTab = feed[i].TabID
+						m.pressID = feed[i].ID()
 					}
 				}
 			}
@@ -618,24 +668,24 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseActionMotion:
 		if m.pressX >= 0 && (absInt(ev.X-m.pressX) > 2 || absInt(ev.Y-m.pressY) > 2) {
-			m.pressX, m.pressY, m.pressTab = -1, -1, "" // drag, not a tap
+			m.pressX, m.pressY, m.pressID = -1, -1, "" // drag, not a tap
 		}
 		return m, nil
 	case tea.MouseActionRelease:
 		if ev.Button != tea.MouseButtonLeft && ev.Button != tea.MouseButtonNone {
 			return m, nil
 		}
-		px, py, tab := m.pressX, m.pressY, m.pressTab
-		m.pressX, m.pressY, m.pressTab = -1, -1, ""
+		px, py, id := m.pressX, m.pressY, m.pressID
+		m.pressX, m.pressY, m.pressID = -1, -1, ""
 		if px < 0 || absInt(ev.X-px) > 2 || absInt(ev.Y-py) > 2 {
 			return m, nil
 		}
-		return m.clickAt(px, py, tab)
+		return m.clickAt(px, py, id)
 	}
 	return m, nil
 }
 
-func (m Model) clickAt(x, y int, tab string) (tea.Model, tea.Cmd) {
+func (m Model) clickAt(x, y int, id string) (tea.Model, tea.Cmd) {
 	if m.detailOpen {
 		// tapping the reply box focuses it, like tapping a comment field
 		if y >= m.height-4 && y <= m.height-2 {
@@ -650,16 +700,14 @@ func (m Model) clickAt(x, y int, tab string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// xiaohongshu tap: straight into the card that was under the finger
-	if tab != "" && selIndex(feedTabs(m), tab) >= 0 {
-		m.selID = tab
+	if id != "" && selIndex(feedTabs(m), id) >= 0 {
+		m.selID = id
 		m.actionNote = ""
 		m.syncScroll()
 		return m.openDetail()
 	}
-	if tab == "" && y == m.height-2 {
-		m.inputOn = true
-		m.input.Focus()
-		return m, nil
+	if id == "" && y == m.height-2 {
+		return m.beginCompose()
 	}
 	return m, nil
 }
@@ -685,9 +733,10 @@ func (m Model) openDetail() (tea.Model, tea.Cmd) {
 	m.input.Blur()
 	m.transcript = m.previews[row.PaneID] // show something while the long read runs
 	m.transcriptOf = row.PaneID
+	m.switchDraft(row.PaneID)
 	m.actionNote = ""
 	m.detailSeq++
-	readCmd := fetchDetail(m.bin, row.PaneID, m.detailSeq)
+	readCmd := m.fetchDetail(row.PaneID)
 	m.detailReading = readCmd != nil
 	if readCmd != nil {
 		m.detailReadSeq = m.detailSeq
@@ -710,6 +759,17 @@ func (m *Model) closeDetail() {
 	m.detailReading = false
 	m.inputOn = false
 	m.input.Blur()
+	m.syncScroll()
+}
+
+// Clamp the stored offset, including after output or terminal size changes.
+// Clamping only in View lets invisible overscroll swallow subsequent keys.
+func (m *Model) scrollDetail(delta int) {
+	if !m.detailOpen {
+		return
+	}
+	limit := max(0, len(detailLines(*m, max(20, m.width)))-detailAreaH(m.height))
+	m.detailScroll = max(0, min(limit, min(m.detailScroll, limit)+delta))
 }
 
 // syncScroll persists the glance viewport after anything that can move the
@@ -717,11 +777,18 @@ func (m *Model) closeDetail() {
 func (m *Model) syncScroll() {
 	_, scroll, _ := glanceSlots(*m, m.width, glanceFeedH(m.height))
 	m.feedScroll = scroll
+	if !m.detailOpen && !m.inputOn {
+		pane := ""
+		if row := m.selectedRow(); row != nil {
+			pane = row.PaneID
+		}
+		m.switchDraft(pane)
+	}
 }
 
 func (m Model) detailRow() *model.TabRow {
 	for _, t := range m.snap.Tabs {
-		if t.TabID == m.detailTab {
+		if t.PaneID == m.transcriptOf && (m.transcriptOf != "" || t.TabID == m.detailTab) {
 			row := t
 			return &row
 		}
@@ -752,7 +819,7 @@ func (m *Model) moveSpatial(dir string) {
 	}
 	cur := selIndex(feed, m.selID)
 	if cur < 0 {
-		m.selID = feed[0].TabID
+		m.selID = feed[0].ID()
 		m.syncScroll()
 		return
 	}
@@ -822,7 +889,7 @@ func (m *Model) moveSpatial(dir string) {
 		}
 	}
 	if best >= 0 {
-		m.selID = feed[best].TabID
+		m.selID = feed[best].ID()
 		m.syncScroll()
 	}
 }
@@ -891,7 +958,7 @@ func (m *Model) pageWall(dir int) {
 			}
 		}
 	}
-	m.selID = feed[best].TabID
+	m.selID = feed[best].ID()
 	m.feedScroll = target
 	m.syncScroll()
 }
@@ -907,7 +974,7 @@ func (m *Model) moveTo(idx int) {
 	if idx >= len(feed) {
 		idx = len(feed) - 1
 	}
-	m.selID = feed[idx].TabID
+	m.selID = feed[idx].ID()
 	m.syncScroll()
 }
 
@@ -918,14 +985,14 @@ func (m *Model) fixSelection() {
 		return
 	}
 	if selIndex(feed, m.selID) < 0 {
-		m.selID = feed[0].TabID
+		m.selID = feed[0].ID()
 	}
 	m.syncScroll()
 }
 
 func selIndex(feed []model.TabRow, id string) int {
 	for i, t := range feed {
-		if t.TabID == id {
+		if t.ID() == id {
 			return i
 		}
 	}
@@ -998,16 +1065,32 @@ func jumpTab(bin string, row model.TabRow) tea.Cmd {
 	}
 }
 
-// fetchFeedReads pulls previews for visible cards, but only for panes whose
-// revision moved since the last successful read (force overrides).
-func fetchFeedReads(m Model, force bool) tea.Cmd {
-	candidates := visiblePanes(m)
+func (m Model) refreshFeed(force bool) (tea.Model, tea.Cmd) {
+	cmd := m.fetchFeedReads(force)
+	return m, cmd
+}
+
+// Round-robin batches keep later visible cards fed even when the first eight
+// change on every poll. A slow pane has at most one preview read in flight.
+func (m *Model) fetchFeedReads(force bool) tea.Cmd {
+	candidates := visiblePanes(*m)
 	if len(candidates) == 0 {
 		return nil
 	}
+	start := 0
+	for i, c := range candidates {
+		if c.pane == m.previewAfter {
+			start = (i + 1) % len(candidates)
+			break
+		}
+	}
 	var ids []string
 	revs := map[string]int{}
-	for _, c := range candidates {
+	for i := 0; i < len(candidates) && len(ids) < 8; i++ {
+		c := candidates[(start+i)%len(candidates)]
+		if _, busy := m.previewBusy[c.pane]; busy {
+			continue
+		}
 		if last, read := m.lastRev[c.pane]; !force && read && last == c.rev {
 			continue
 		}
@@ -1017,13 +1100,25 @@ func fetchFeedReads(m Model, force bool) tea.Cmd {
 	if len(ids) == 0 {
 		return nil
 	}
-	if len(ids) > 8 {
-		ids = ids[:8]
+	m.paneReadSeq++
+	seq := m.paneReadSeq
+	for _, id := range ids {
+		m.previewBusy[id] = seq
 	}
+	m.previewAfter = ids[len(ids)-1]
 	bin := m.bin
 	return func() tea.Msg {
-		return previewsMsg{byPane: herdr.ReadMany(bin, ids, 28), revs: revs}
+		return previewsMsg{byPane: herdr.ReadMany(bin, ids, 28), revs: revs, seq: seq}
 	}
+}
+
+func (m *Model) storePreview(pane, text string, seq int) bool {
+	if seq < m.previewSeq[pane] {
+		return false
+	}
+	m.previews[pane] = text
+	m.previewSeq[pane] = seq
+	return true
 }
 
 type paneRev struct {
@@ -1056,13 +1151,15 @@ func visiblePanes(m Model) []paneRev {
 	return out
 }
 
-func fetchDetail(bin, pane string, seq int) tea.Cmd {
+func (m *Model) fetchDetail(pane string) tea.Cmd {
 	if pane == "" {
 		return nil
 	}
+	m.paneReadSeq++
+	bin, seq, cacheSeq := m.bin, m.detailSeq, m.paneReadSeq
 	return func() tea.Msg {
 		text, err := herdr.ReadRecent(bin, pane, detailReadLines)
-		return readMsg{pane: pane, text: text, seq: seq, err: err}
+		return readMsg{pane: pane, text: text, seq: seq, cacheSeq: cacheSeq, err: err}
 	}
 }
 

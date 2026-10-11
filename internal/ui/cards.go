@@ -13,12 +13,18 @@ var (
 	reDateSeg = regexp.MustCompile(`^20\d\d-\d\d-\d\d$`)
 	reOptRow  = regexp.MustCompile(`^\d+[.)][ \t]`)
 	// agent chrome footers: token counters like "↑96k ↓37k R5.9M $0.020 12.6%/1.0M"
-	reFooterUp   = regexp.MustCompile(`[↑↓]\s*\d`)
-	reCostPct    = regexp.MustCompile(`\$\d+(\.\d+)?|\d+(\.\d+)?%/`)
-	reWorkedFor  = regexp.MustCompile(`(?i)worked for\s+\d`)
-	reCwdBranch  = regexp.MustCompile(`(?i)(?:^|[\s])(?:~/|/|[a-zA-Z]:\\)\S.*\s·\s+[A-Za-z0-9._/-]+$`)
-	reAutoStatus = regexp.MustCompile(`(?i)^auto\s·`)
-	reTaskCount  = regexp.MustCompile(`(?i)^\d+\s+tasks?$`)
+	reFooterUp     = regexp.MustCompile(`[↑↓]\s*\d`)
+	reCostPct      = regexp.MustCompile(`\$\d+(\.\d+)?|\d+(\.\d+)?%/`)
+	reWorkedFor    = regexp.MustCompile(`(?i)^worked for\s+(?:\d+(?:\.\d+)?\s*(?:ms|s|m|h)\s*)+$`)
+	reCwdBranch    = regexp.MustCompile(`(?i)(?:^|[\s])(?:~/|/|[a-zA-Z]:\\)\S.*\s·\s+[A-Za-z0-9._/-]+$`)
+	reAutoStatus   = regexp.MustCompile(`(?i)^auto\s·`)
+	reTaskCount    = regexp.MustCompile(`(?i)^\d+\s+tasks?$`)
+	reTokenMeter   = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?[kmb]?\s+tokens(?:\s*[·|].*)?$`)
+	reContextMeter = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?%\s+context left(?:\s{2,}.*|\s*[·|].*)?$`)
+	reKeyHint      = regexp.MustCompile(`(?i)^(?:(?:esc|ctrl\+[a-z]) to (?:interrupt|stop|expand|collapse)|enter to send|shift\+tab to cycle modes|\? for shortcuts)(?:\s{2,}.*|\s*[·│|].*)?$`)
+	reKeyBar       = regexp.MustCompile(`(?i)^(?:shift\+tab:mode|ctrl\+[a-z0-9.+-]+:shortcuts)(?:\s+[│|]\s+.*)?$`)
+	reFollowUp     = regexp.MustCompile(`(?i)^(?:→\s+)?add a follow-up(?:\s{2,}ctrl\+c to stop)?$`)
+	reEditedFiles  = regexp.MustCompile(`(?i)\b\d+\s+files? edited\b`)
 )
 
 // parseCardTitle extracts the task from herdr terminal titles that follow the
@@ -110,9 +116,7 @@ func looksLikeChrome(ln string) bool {
 		return true
 	}
 	low := strings.ToLower(ln)
-	if strings.Contains(low, "esc to interrupt") || strings.Contains(low, "ctrl+c to interrupt") ||
-		strings.Contains(low, "? for shortcuts") || strings.Contains(low, "auto-compact") ||
-		strings.Contains(low, "context left") {
+	if reKeyHint.MatchString(ln) || reContextMeter.MatchString(ln) {
 		return true
 	}
 	if (strings.HasPrefix(low, "thinking") || strings.HasPrefix(low, "working") || strings.HasPrefix(low, "loading")) &&
@@ -173,32 +177,26 @@ func barrierLine(ln string) bool {
 	return boxy >= 4 && 2*boxy >= 3*text
 }
 
-// footerHint matches agent bottom-bar residue: keybinding cheat rows, token
-// meters, model banners. Only applied while peeling the tail of a pane, so
-// broad keywords are safe.
+// Footer rows need a recognizable shape, not just a keyword: normal agent
+// answers frequently mention tokens, shortcuts, and files edited too.
 func footerHint(ln string) bool {
 	t := strings.TrimSpace(ln)
 	low := strings.ToLower(t)
-	for _, kw := range []string{
-		"ctrl+", "shift+tab", "for shortcuts", "tokens", "auto-compact",
-		"context left", "add a follow-up", "esc to", "enter to send",
-		"[default]", "to expand", "always-approve", "run everything",
-		"files edited",
-	} {
-		if strings.Contains(low, kw) {
-			return true
-		}
-	}
-	if reWorkedFor.MatchString(ln) {
+	if reKeyHint.MatchString(t) || reKeyBar.MatchString(t) || reTokenMeter.MatchString(t) ||
+		reContextMeter.MatchString(t) || reFollowUp.MatchString(t) || reWorkedFor.MatchString(t) {
 		return true
 	}
-	if reAutoStatus.MatchString(strings.TrimSpace(ln)) {
+	if cursorStatusLine(t) {
 		return true
 	}
-	if reTaskCount.MatchString(t) {
-		return true
-	}
-	return false
+	return strings.Contains(t, " · ") &&
+		(strings.HasSuffix(low, "[default]") || strings.HasSuffix(low, "always-approve"))
+}
+
+func cursorStatusLine(t string) bool {
+	return reAutoStatus.MatchString(t) ||
+		(strings.Contains(t, " · ") && reEditedFiles.MatchString(t) &&
+			strings.HasSuffix(strings.ToLower(t), "run everything"))
 }
 
 func tableRule(ln string) bool {
@@ -241,9 +239,7 @@ func cursorFooterContext(lines []string) bool {
 			continue
 		}
 		seen++
-		low := strings.ToLower(ln)
-		if strings.Contains(low, "run everything") || strings.Contains(low, "files edited") ||
-			strings.Contains(low, "add a follow-up") || reAutoStatus.MatchString(ln) {
+		if reFollowUp.MatchString(ln) || cursorStatusLine(ln) {
 			return true
 		}
 	}
@@ -258,7 +254,7 @@ func peelableChrome(ln string, cursorCtx bool) bool {
 	if usefulLine(ln) == "" {
 		return true
 	}
-	return cursorCtx && cwdBranchLine(t)
+	return cursorCtx && (cwdBranchLine(t) || reTaskCount.MatchString(t))
 }
 
 func frameHasChromeTail(lines []string, frame int, cursorCtx bool) bool {

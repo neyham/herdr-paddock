@@ -67,50 +67,53 @@ func List(bin string) ([]model.TabRow, int, error) {
 	if err := json.Unmarshal(env.Result, &res); err != nil {
 		return nil, 0, fmt.Errorf("herdr snapshot: %w", err)
 	}
+	rows, workspaces := snapshotRows(res.Snapshot)
+	return rows, workspaces, nil
+}
+
+func snapshotRows(s snapshot) ([]model.TabRow, int) {
 	wsName := map[string]string{}
-	for _, w := range res.Snapshot.Workspaces {
+	for _, w := range s.Workspaces {
 		wsName[w.WorkspaceID] = w.Label
 	}
-	type ag struct {
-		kind, status, title, cwd, pane string
-		focused                        bool
-		revision, stateSeq             int
+	// Keep every agent pane. Collapsing a split tab to one representative
+	// makes live reply targets disappear whenever a sibling changes status.
+	byTab := map[string][]agent{}
+	for _, a := range s.Agents {
+		byTab[a.TabID] = append(byTab[a.TabID], a)
 	}
-	byTab := map[string]ag{}
-	for _, a := range res.Snapshot.Agents {
-		prev, ok := byTab[a.TabID]
-		rank := statusRank(a.AgentStatus)
-		if !ok || rank < statusRank(prev.status) || a.Focused {
+	rows := make([]model.TabRow, 0, len(s.Agents))
+	for _, t := range s.Tabs {
+		panes := byTab[t.TabID]
+		if len(panes) == 0 {
+			panes = []agent{{}} // retain non-agent tabs for session metadata
+		}
+		for _, a := range panes {
+			status := a.AgentStatus
+			if status == "" {
+				status = t.AgentStatus
+			}
 			cwd := a.ForegroundCwd
 			if cwd == "" {
 				cwd = a.Cwd
 			}
-			byTab[a.TabID] = ag{a.Agent, a.AgentStatus, a.TerminalTitleStripped, cwd, a.PaneID, a.Focused, a.Revision, a.StateChangeSeq}
+			rows = append(rows, model.TabRow{
+				TabID:       t.TabID,
+				WorkspaceID: t.WorkspaceID,
+				WSLabel:     oneLine(wsName[t.WorkspaceID]),
+				TabLabel:    oneLine(t.Label),
+				Agent:       oneLine(a.Agent),
+				Status:      status,
+				Title:       oneLine(a.TerminalTitleStripped),
+				Cwd:         oneLine(cwd),
+				PaneID:      a.PaneID,
+				Focused:     a.Focused || (len(panes) == 1 && t.Focused),
+				Revision:    a.Revision,
+				StateSeq:    a.StateChangeSeq,
+			})
 		}
 	}
-	rows := make([]model.TabRow, 0, len(res.Snapshot.Tabs))
-	for _, t := range res.Snapshot.Tabs {
-		a := byTab[t.TabID]
-		status := t.AgentStatus
-		if a.status != "" {
-			status = a.status
-		}
-		rows = append(rows, model.TabRow{
-			TabID:       t.TabID,
-			WorkspaceID: t.WorkspaceID,
-			WSLabel:     oneLine(wsName[t.WorkspaceID]),
-			TabLabel:    oneLine(t.Label),
-			Agent:       oneLine(a.kind),
-			Status:      status,
-			Title:       oneLine(a.title),
-			Cwd:         oneLine(a.cwd),
-			PaneID:      a.pane,
-			Focused:     t.Focused || a.focused,
-			Revision:    a.revision,
-			StateSeq:    a.stateSeq,
-		})
-	}
-	return rows, len(res.Snapshot.Workspaces), nil
+	return rows, len(s.Workspaces)
 }
 
 func Focus(bin, workspaceID, tabID, paneID string) error {
@@ -195,21 +198,6 @@ func Prompt(bin, target, text string) error {
 	}
 	_, err := run(bin, 8*time.Second, "agent", "prompt", target, text)
 	return err
-}
-
-func statusRank(s string) int {
-	switch s {
-	case "blocked":
-		return 0
-	case "working":
-		return 1
-	case "done":
-		return 2
-	case "idle":
-		return 3
-	default:
-		return 4
-	}
 }
 
 // Sanitize removes terminal escape sequences and control characters from

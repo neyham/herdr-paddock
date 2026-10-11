@@ -33,3 +33,17 @@ func TestFeedTabsStableWithinGroup(t *testing.T) {
 		t.Fatalf("first-seen order should win within a group: %+v", feed)
 	}
 }
+
+func TestSelfPaneDoesNotHideSiblings(t *testing.T) {
+	rows := []TabRow{
+		{TabID: "shared", PaneID: "self", Agent: "codex", Status: "working"},
+		{TabID: "shared", PaneID: "sibling", Agent: "claude", Status: "blocked"},
+	}
+	feed := FeedTabs(rows, "shared", "self", nil)
+	if len(feed) != 1 || feed[0].PaneID != "sibling" {
+		t.Fatalf("self exclusion hid sibling: %+v", feed)
+	}
+	if feed := FeedTabs(rows, "shared", "", nil); len(feed) != 0 {
+		t.Fatalf("missing self pane should still fall back to tab exclusion: %+v", feed)
+	}
+}
