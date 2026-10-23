@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	version             = "0.6.6"
+	version             = "0.6.7"
 	detailReadLines     = 400
 	detailMaxLines      = 4000
 	detailRefreshPeriod = time.Second
