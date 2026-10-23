@@ -2,6 +2,7 @@ package herdr
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -197,6 +198,27 @@ func Prompt(bin, target, text string) error {
 		return fmt.Errorf("empty")
 	}
 	_, err := run(bin, 8*time.Second, "agent", "prompt", target, text)
+	var apiErr *Error
+	if errors.As(err, &apiErr) && apiErr.Code == "agent_blocked" {
+		return answerBlocked(bin, target, text)
+	}
+	return err
+}
+
+// answerBlocked types a reply into an approval or question dialog. herdr's
+// agent prompt refuses blocked agents, but answering that dialog is exactly
+// what a glance reply is for, so the text goes in as keystrokes instead. A
+// single character is one keypress — option menus act on it immediately, and
+// a trailing Enter could confirm whatever dialog comes next. Anything longer
+// is submitted with Enter, like typing it into the pane.
+func answerBlocked(bin, target, text string) error {
+	if _, err := run(bin, 3*time.Second, "pane", "send-text", target, text); err != nil {
+		return err
+	}
+	if len([]rune(text)) == 1 {
+		return nil
+	}
+	_, err := run(bin, 3*time.Second, "pane", "send-keys", target, "enter")
 	return err
 }
 
@@ -319,6 +341,35 @@ func (w *cappedBuilder) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Error is a failure herdr reported in its JSON envelope.
+type Error struct {
+	Code    string
+	Message string
+}
+
+func (e *Error) Error() string {
+	return shortErr(e.Message)
+}
+
+// apiError extracts {"error":{"code","message"}} from herdr's output; herdr
+// prints it on stdout and leaves stderr empty.
+func apiError(out string) *Error {
+	var env struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &env) != nil || env.Error == nil || env.Error.Code == "" {
+		return nil
+	}
+	msg := env.Error.Message
+	if msg == "" {
+		msg = env.Error.Code
+	}
+	return &Error{Code: env.Error.Code, Message: msg}
+}
+
 func run(bin string, timeout time.Duration, args ...string) ([]byte, error) {
 	cmd := exec.Command(bin, args...)
 	var stdout, stderr cappedBuilder
@@ -335,17 +386,27 @@ func run(bin string, timeout time.Duration, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("timeout")
 	case err := <-done:
 		if err != nil {
+			if apiErr := apiError(stdout.b.String()); apiErr != nil {
+				if noHerdr(apiErr.Message) {
+					return nil, fmt.Errorf("no-herdr")
+				}
+				return nil, apiErr
+			}
 			msg := strings.TrimSpace(stderr.b.String())
 			if msg == "" {
 				msg = err.Error()
 			}
-			if strings.Contains(msg, "not running") || strings.Contains(msg, "connection refused") {
+			if noHerdr(msg) {
 				return nil, fmt.Errorf("no-herdr")
 			}
 			return nil, fmt.Errorf("%s", shortErr(msg))
 		}
 	}
 	return []byte(stdout.b.String()), nil
+}
+
+func noHerdr(msg string) bool {
+	return strings.Contains(msg, "not running") || strings.Contains(msg, "connection refused")
 }
 
 func shortErr(s string) string {

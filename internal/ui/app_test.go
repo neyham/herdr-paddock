@@ -461,3 +461,21 @@ func TestDetailScrollClampsAfterResizeAndShorterRead(t *testing.T) {
 		t.Fatalf("short read retained scroll=%d", m.detailScroll)
 	}
 }
+
+// The plugin manifest is what herdr installs; the help panel must not show a
+// different version.
+func TestVersionMatchesPluginManifest(t *testing.T) {
+	raw, err := os.ReadFile("../../herdr-plugin.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ln := range strings.Split(string(raw), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(ln), "version = "); ok {
+			if strings.Trim(v, `"`) != version {
+				t.Fatalf("herdr-plugin.toml has %s, ui.version is %q", v, version)
+			}
+			return
+		}
+	}
+	t.Fatal("no version in herdr-plugin.toml")
+}

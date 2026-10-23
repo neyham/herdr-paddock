@@ -6,7 +6,8 @@
 #
 # It answers the two calls paddock makes — `api snapshot` and
 # `agent read <pane> …` — with static demo data. Replies are accepted
-# and dropped.
+# and dropped; like herdr, `agent prompt` refuses the blocked agents,
+# which paddock then answers with `pane send-text`.
 
 case "$1 $2" in
 "api snapshot")
@@ -132,7 +133,18 @@ TXT
 	esac
 	exit 0
 	;;
-"agent prompt"|"tab focus"|"workspace focus"|"agent focus")
+"agent prompt")
+	# like herdr, refuse prompts while an agent sits at a question dialog
+	case "$3" in
+	p1|p4)
+		echo '{"error":{"code":"agent_blocked","message":"agent is blocked"},"id":"demo"}'
+		exit 1
+		;;
+	esac
+	echo '{"id":"demo","result":{"type":"ok"}}'
+	exit 0
+	;;
+"pane send-text"|"pane send-keys"|"tab focus"|"workspace focus"|"agent focus")
 	echo '{"id":"demo","result":{"type":"ok"}}'
 	exit 0
 	;;

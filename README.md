@@ -61,7 +61,7 @@ Or as a herdr plugin (opens as a popup over your herdr session). Also listed on 
 herdr plugin install neyham/herdr-paddock
 ```
 
-Requires herdr ≥ 0.7.4 running on the same machine, and Go ≥ 1.24 to build.
+Requires herdr ≥ 0.7.4 running on the same machine (tested with 0.9), and Go ≥ 1.24 to build.
 
 ### Try it without herdr
 
@@ -146,6 +146,9 @@ or cursor tricks into your SSH session.
 
 ## Notes
 
+- Replying to a blocked agent (one waiting at an approval or question
+  dialog) types into its pane: a single character goes in as one keypress,
+  so option menus act on it; anything longer is followed by enter.
 - Colors assume a dark terminal (Tokyo Night palette) and a truecolor
   `$TERM`; paddock respects `NO_COLOR`.
 - Card titles parse the `<date>｜<task>｜<subtask>` convention some herdr

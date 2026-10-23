@@ -1,0 +1,22 @@
+{"id":"cli:api:snapshot","result":{"type":"session_snapshot","snapshot":{
+"protocol":22,
+"version":"0.9.1",
+"focused_workspace_id":"w1","focused_tab_id":"w1:t1","focused_pane_id":"w1:p1",
+"workspaces":[
+ {"workspace_id":"w1","label":"shop","number":1,"focused":true,"active_tab_id":"w1:t1","agent_status":"blocked","pane_count":3,"tab_count":2}
+],
+"tabs":[
+ {"tab_id":"w1:t1","workspace_id":"w1","label":"checkout","number":1,"focused":true,"agent_status":"blocked","pane_count":2},
+ {"tab_id":"w1:t2","workspace_id":"w1","label":"notes","number":2,"focused":false,"agent_status":"unknown","pane_count":1}
+],
+"agents":[
+ {"tab_id":"w1:t1","workspace_id":"w1","pane_id":"w1:p1","terminal_id":"term_a","agent":"claude","agent_status":"blocked","agent_session":{"agent":"claude","kind":"session_id","source":"hook","value":"s-1"},"terminal_title_stripped":"claude - 2026-08-16\uff5cCheckout flow\uff5cPick a payment provider - shop","cwd":"/home/dev/shop","foreground_cwd":"/home/dev/shop","focused":true,"revision":41,"state_change_seq":7},
+ {"tab_id":"w1:t1","workspace_id":"w1","pane_id":"w1:p2","terminal_id":"term_b","agent":"codex","agent_status":"working","agent_session":{"agent":"codex","kind":"session_id","source":"hook","value":"s-2"},"cwd":"/home/dev/shop","foreground_cwd":"/home/dev/shop/api","focused":false,"revision":88,"state_change_seq":12}
+],
+"panes":[
+ {"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","terminal_id":"term_a","agent_status":"blocked","cwd":"/home/dev/shop","foreground_cwd":"/home/dev/shop","focused":true,"revision":41,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":34},"terminal_title":"✳ claude - 2026-08-16｜Checkout flow｜Pick a payment provider - shop","terminal_title_stripped":"claude - 2026-08-16｜Checkout flow｜Pick a payment provider - shop"},
+ {"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","terminal_id":"term_b","agent_status":"working","cwd":"/home/dev/shop","foreground_cwd":"/home/dev/shop/api","focused":false,"revision":88,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":34}},
+ {"pane_id":"w1:p3","tab_id":"w1:t2","workspace_id":"w1","terminal_id":"term_c","agent_status":"unknown","cwd":"/home/dev","foreground_cwd":"/home/dev","focused":false,"revision":3,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":34},"terminal_title":"zsh","terminal_title_stripped":"zsh"}
+],
+"layouts":[]
+}}}

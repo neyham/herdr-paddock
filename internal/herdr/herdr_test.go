@@ -1,10 +1,147 @@
 package herdr
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/neyham/herdr-paddock/internal/model"
 )
+
+// The test binary doubles as a fake herdr CLI (same trick as the ui tests):
+// it logs each call and answers the way herdr 0.9 does, so the real
+// subprocess path runs without touching a live session.
+func TestMain(m *testing.M) {
+	if os.Getenv("PADDOCK_FAKE_HERDR") != "1" {
+		os.Exit(m.Run())
+	}
+	args := os.Args[1:]
+	if f, err := os.OpenFile(os.Getenv("PADDOCK_FAKE_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		_ = json.NewEncoder(f).Encode(args)
+		_ = f.Close()
+	}
+	call := strings.Join(args[:min(2, len(args))], " ")
+	switch {
+	case call == "api snapshot":
+		raw, err := os.ReadFile(os.Getenv("PADDOCK_FAKE_SNAPSHOT"))
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Stdout.Write(raw)
+	case call == "agent prompt" && len(args) == 4:
+		switch args[2] {
+		case "blocked":
+			fmt.Println(`{"error":{"code":"agent_blocked","message":"agent is blocked"},"id":"cli:agent:prompt"}`)
+			os.Exit(1)
+		case "missing":
+			fmt.Println(`{"error":{"code":"agent_not_found","message":"agent target missing not found"},"id":"cli:agent:prompt"}`)
+			os.Exit(1)
+		}
+		fmt.Println(`{"id":"cli:agent:prompt","result":{"type":"ok"}}`)
+	case call == "pane send-text" && len(args) == 4, call == "pane send-keys" && len(args) >= 4:
+		fmt.Println(`{"id":"cli:request","result":{"type":"ok"}}`)
+	default:
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+// fakeHerdr points calls at the test binary and returns a reader for the
+// commands it received.
+func fakeHerdr(t *testing.T) (string, func() [][]string) {
+	t.Helper()
+	log := filepath.Join(t.TempDir(), "calls.jsonl")
+	t.Setenv("PADDOCK_FAKE_HERDR", "1")
+	t.Setenv("PADDOCK_FAKE_LOG", log)
+	return os.Args[0], func() [][]string {
+		raw, _ := os.ReadFile(log)
+		var calls [][]string
+		for _, ln := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			var c []string
+			if json.Unmarshal([]byte(ln), &c) == nil {
+				calls = append(calls, c)
+			}
+		}
+		return calls
+	}
+}
+
+// Contract test against a herdr 0.9 session snapshot. agents[] omits
+// terminal_title_stripped when the title is empty.
+func TestListHerdr09Snapshot(t *testing.T) {
+	bin, _ := fakeHerdr(t)
+	t.Setenv("PADDOCK_FAKE_SNAPSHOT", filepath.Join("testdata", "snapshot-0.9.json"))
+	rows, ws, err := List(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws != 1 || len(rows) != 3 {
+		t.Fatalf("ws=%d rows=%+v", ws, rows)
+	}
+	p1, p2, notes := rows[0], rows[1], rows[2]
+	if p1.PaneID != "w1:p1" || p1.Status != "blocked" || p1.Revision != 41 || p1.StateSeq != 7 {
+		t.Fatalf("p1 = %+v", p1)
+	}
+	if !strings.Contains(p1.Title, "Pick a payment provider") {
+		t.Fatalf("title = %q", p1.Title)
+	}
+	if p2.PaneID != "w1:p2" || p2.Title != "" || p2.Cwd != "/home/dev/shop/api" {
+		t.Fatalf("p2 = %+v", p2)
+	}
+	if notes.PaneID != "" || notes.TabLabel != "notes" {
+		t.Fatalf("non-agent tab = %+v", notes)
+	}
+}
+
+func TestPromptAnswersBlockedAgent(t *testing.T) {
+	cases := []struct {
+		name, target, text string
+		want               [][]string
+	}{
+		{"idle agent gets a normal prompt", "idle", "ship it", [][]string{
+			{"agent", "prompt", "idle", "ship it"},
+		}},
+		{"blocked agent: text then enter", "blocked", "go tonight", [][]string{
+			{"agent", "prompt", "blocked", "go tonight"},
+			{"pane", "send-text", "blocked", "go tonight"},
+			{"pane", "send-keys", "blocked", "enter"},
+		}},
+		{"blocked agent: one key picks an option, no enter", "blocked", "2", [][]string{
+			{"agent", "prompt", "blocked", "2"},
+			{"pane", "send-text", "blocked", "2"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bin, calls := fakeHerdr(t)
+			if err := Prompt(bin, c.target, c.text); err != nil {
+				t.Fatal(err)
+			}
+			if got := calls(); !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("calls = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// herdr reports errors as JSON on stdout with an empty stderr; the user must
+// see herdr's message, not "exit status 1".
+func TestRunSurfacesHerdrError(t *testing.T) {
+	bin, calls := fakeHerdr(t)
+	err := Prompt(bin, "missing", "hello")
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "agent_not_found" || err.Error() != "agent target missing not found" {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(calls()); n != 1 {
+		t.Fatalf("non-blocked failure must not fall back to send-text, got %d calls", n)
+	}
+}
 
 func TestSnapshotKeepsAllSiblingAgents(t *testing.T) {
 	cases := []struct {
